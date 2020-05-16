@@ -1,0 +1,5 @@
+.sconsign.dblite
+badnes
+*.o
+roms
+*.nes
