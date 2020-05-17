@@ -1,4 +1,5 @@
 # BadNES
+
 ```
   ____            _ _   _ ______  _____ 
  |  _ \          | | \ | |  ____|/ ____|
@@ -6,6 +7,7 @@
  |  _ < / _` |/ _` | . ` |  __|  \___ \ 
  | |_) | (_| | (_| | |\  | |____ ____) |
  |____/ \__,_|\__,_|_| \_|______|_____/ 
-                                EMULATOR
+				EMULATOR
 ```
+
 An extremely minimal work-in-progress NES emulator based on [LaiNES](https://github.com/AndreaOrru/LaiNES).
