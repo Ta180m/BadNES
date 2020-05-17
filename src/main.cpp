@@ -507,7 +507,6 @@ namespace CPU {
 			case 0xFE: return INC<_abx>() ;
 			default:
 				std::cout << "Invalid Opcode! PC: " << PC << " Opcode: 0x" << std::hex << (int)(rd(PC - 1)) << "\n";
-				exit(0);
 				return NOP();
 		}
 	}
