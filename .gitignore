@@ -3,3 +3,5 @@ badnes
 *.o
 roms
 *.nes
+build
+LaiNES
