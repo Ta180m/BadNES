@@ -13,17 +13,9 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <SDL2/SDL.h>
-#include <SDL2/SDL_image.h>
-#include <SDL2/SDL_ttf.h>
-#include <SimpleIni.h>
 #include "NES_Apu.h"
 #include "Sound_Queue.h"
 #define NTH_BIT(x, n) (((x) >> (n)) & 1)
-#define CONFIG_DIR_DEFAULT_MODE      S_IRWXU | S_IRGRP |  S_IXGRP | S_IROTH | S_IXOTH
-#define USE_CONFIG_DIR true
-#define CONFIG_DIR_NAME "BadNES"
-#define CONFIG_FALLBACK ".badnes-settings"
-#define CONFIG_PATH_MAX 1024 // PATH_MAX is a portability nightmare
 typedef uint8_t  u8;  typedef int8_t  s8;
 typedef uint16_t u16; typedef int16_t s16;
 typedef uint32_t u32; typedef int32_t s32;
@@ -103,67 +95,20 @@ namespace PPU {
 }
 namespace Cartridge {
 	template <bool wr> u8 access(u16 addr, u8 v = 0); template <bool wr> u8 chr_access(u16 addr, u8 v = 0);
-	void signal_scanline(), load(const char* fileName);
-	bool loaded();
+	void signal_scanline(), load(const char *fileName);
 }
 namespace Joypad {
 	u8 read_state(int n);
 	void write_strobe(bool v);
 }
 namespace GUI {
-	const unsigned WIDTH  = 256, HEIGHT = 240, FONT_SZ = 15; // Screen size
-	const int TEXT_CENTER  = -1, TEXT_RIGHT   = -2;
+	const unsigned WIDTH  = 256, HEIGHT = 240; // Screen size
+	const int TEXT_CENTER = -1, TEXT_RIGHT = -2;
 	int query_button();
-	void init(), toggle_pause(), run(), set_size(int mul);
+	void init(), run();
 	void render_texture(SDL_Texture* texture, int x, int y), new_frame(u32* pixels), new_samples(const blip_sample_t* samples, size_t count);
 	u8 get_joypad_state(int n);
 	SDL_Scancode query_key();
-	SDL_Texture* gen_text(std::string text, SDL_Color color);
-}
-namespace GUI {
-	void load_settings(), save_settings(); // Loading and saving
-	const char* get_config_path(char * buf, int buflen);
-	extern int last_window_size;
-	extern SDL_Scancode KEY_A[], KEY_B[], KEY_SELECT[], KEY_START[], KEY_UP[], KEY_DOWN[], KEY_LEFT[], KEY_RIGHT[];
-	extern int BTN_UP[], BTN_DOWN[], BTN_LEFT[], BTN_RIGHT[], BTN_A[], BTN_B[], BTN_SELECT[], BTN_START[];
-	extern bool useJoystick[];
-}
-namespace GUI {
-	class Entry {
-		std::string label;
-		std::function<void()> callback;
-		bool selected = false;
-		SDL_Texture* whiteTexture = nullptr; SDL_Texture* redTexture = nullptr;
-	public:
-		Entry(std::string label, std::function<void()> callback = []{});
-		~Entry();
-		void set_label(std::string label);
-		inline std::string& get_label() { return label; }
-		virtual void select() { selected = true; };
-		virtual void unselect() { selected = false; };
-		void trigger() { callback(); };
-		virtual void render(int x, int y);
-	};
-	class ControlEntry : public Entry {
-		SDL_Scancode* key; int* button; Entry* keyEntry;
-	public:
-		ControlEntry(std::string action, SDL_Scancode* key);
-		ControlEntry(std::string action, int* button);
-		void select() { Entry::select(); keyEntry->select(); }
-		void unselect() { Entry::unselect(); keyEntry->unselect(); }
-		void render(int x, int y) { Entry::render(x, y); keyEntry->render(TEXT_RIGHT, y); }
-	};
-	class Menu {
-		const int MAX_ENTRY = GUI::HEIGHT / FONT_SZ - 1;
-		int cursor = 0, top = 0, bottom = MAX_ENTRY;
-	public:
-		std::vector<Entry*> entries;
-		void add(Entry* entry), clear(), sort_by_label(), update(u8 const* keys), render();
-	};
-	class FileMenu : public Menu {
-		void change_dir(std::string dir);
-	public: FileMenu();
-	};
 }
 
 // Mappers
@@ -562,6 +507,7 @@ namespace CPU {
 			case 0xFE: return INC<_abx>() ;
 			default:
 				std::cout << "Invalid Opcode! PC: " << PC << " Opcode: 0x" << std::hex << (int)(rd(PC - 1)) << "\n";
+				exit(0);
 				return NOP();
 		}
 	}
@@ -843,7 +789,7 @@ namespace Cartridge {
 		fread(rom, size, 1, f);
 		fclose(f);
 		int mapperNum = (rom[7] & 0xF0) | (rom[6] >> 4);
-		if (loaded()) delete mapper;
+		if (mapper != nullptr) delete mapper;
 		switch (mapperNum) {
 			case 0:  mapper = new Mapper0(rom); break;
 			case 1:  mapper = new Mapper1(rom); break;
@@ -853,7 +799,6 @@ namespace Cartridge {
 		}
 		CPU::power(), PPU::reset(), APU::reset();
 	}
-	bool loaded() { return mapper != nullptr; }
 }
 namespace Joypad {
 	u8 joypad_bits[2]; // Joypad shift registers
@@ -876,94 +821,24 @@ namespace GUI {
 	SDL_Window* window;
 	SDL_Renderer* renderer;
 	SDL_Texture* gameTexture;
-	SDL_Texture* background;
-	TTF_Font* font;
 	u8 const* keys;
 	Sound_Queue* soundQueue;
-	SDL_Joystick* joystick[] = { nullptr, nullptr };
-	// Menus
-	Menu* menu;
-	Menu* mainMenu;
-	Menu* settingsMenu;
-	Menu* videoMenu;
-	Menu* keyboardMenu[2];
-	Menu* joystickMenu[2];
-	FileMenu* fileMenu;
-	bool pause = true;
-	// Set the window size multiplier
-	void set_size(int mul) {
-		last_window_size = mul;
-		SDL_SetWindowSize(window, WIDTH * mul, HEIGHT * mul);
-		SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-	}
+	SDL_Scancode KEY_A = SDL_SCANCODE_A, KEY_B = SDL_SCANCODE_S, KEY_SELECT = SDL_SCANCODE_SPACE, KEY_START = SDL_SCANCODE_RETURN;
+	SDL_Scancode KEY_UP = SDL_SCANCODE_UP, KEY_DOWN = SDL_SCANCODE_DOWN, KEY_LEFT = SDL_SCANCODE_LEFT, KEY_RIGHT = SDL_SCANCODE_RIGHT;
 	// Initialize GUI
 	void init() {
 		// Initialize graphics system
 		SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK);
 		SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
-		TTF_Init();
-		for (int i = 0; i < SDL_NumJoysticks(); i++) joystick[i] = SDL_JoystickOpen(i);
 		APU::init();
 		soundQueue = new Sound_Queue;
 		soundQueue->init(96000);
 		// Initialize graphics structures
-		window = SDL_CreateWindow  ("BadNES", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH * last_window_size, HEIGHT * last_window_size, 0);
+		window = SDL_CreateWindow  ("BadNES", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
 		renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 		SDL_RenderSetLogicalSize(renderer, WIDTH, HEIGHT);
 		gameTexture = SDL_CreateTexture (renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
-		font = TTF_OpenFont("res/font.ttf", FONT_SZ);
-		keys = SDL_GetKeyboardState(0);
-		// Initial background
-		SDL_Surface* backSurface  = IMG_Load("res/init.png");
-		background = SDL_CreateTextureFromSurface(renderer, backSurface);
-		SDL_SetTextureColorMod(background, 60, 60, 60);
-		SDL_FreeSurface(backSurface);
-		// Menus
-		mainMenu = new Menu;
-		mainMenu->add(new Entry("Load ROM", []{ menu = fileMenu; }));
-		mainMenu->add(new Entry("Settings", []{ menu = settingsMenu; }));
-		mainMenu->add(new Entry("Exit",     []{ exit(0); }));
-		settingsMenu = new Menu;
-		settingsMenu->add(new Entry("<",            []{ menu = mainMenu; }));
-		settingsMenu->add(new Entry("Video",        []{ menu = videoMenu; }));
-		settingsMenu->add(new Entry("Controller 1", []{ menu = useJoystick[0] ? joystickMenu[0] : keyboardMenu[0]; }));
-		settingsMenu->add(new Entry("Controller 2", []{ menu = useJoystick[1] ? joystickMenu[1] : keyboardMenu[1]; }));
-		settingsMenu->add(new Entry("Save Settings", []{ save_settings(); menu = mainMenu; }));
-		videoMenu = new Menu;
-		videoMenu->add(new Entry("<",       []{ menu = settingsMenu; }));
-		videoMenu->add(new Entry("Size 1x", []{ set_size(1); }));
-		videoMenu->add(new Entry("Size 2x", []{ set_size(2); }));
-		videoMenu->add(new Entry("Size 3x", []{ set_size(3); }));
-		videoMenu->add(new Entry("Size 4x", []{ set_size(4); }));
-		for (int i = 0; i < 2; i++) {
-			keyboardMenu[i] = new Menu;
-			keyboardMenu[i]->add(new Entry("<", []{ menu = settingsMenu; }));
-			if (joystick[i] != nullptr)
-				keyboardMenu[i]->add(new Entry("Joystick >", [=]{ menu = joystickMenu[i]; useJoystick[i] = true; }));
-			keyboardMenu[i]->add(new ControlEntry("Up",     &KEY_UP[i]));
-			keyboardMenu[i]->add(new ControlEntry("Down",   &KEY_DOWN[i]));
-			keyboardMenu[i]->add(new ControlEntry("Left",   &KEY_LEFT[i]));
-			keyboardMenu[i]->add(new ControlEntry("Right",  &KEY_RIGHT[i]));
-			keyboardMenu[i]->add(new ControlEntry("A",      &KEY_A[i]));
-			keyboardMenu[i]->add(new ControlEntry("B",      &KEY_B[i]));
-			keyboardMenu[i]->add(new ControlEntry("Start",  &KEY_START[i]));
-			keyboardMenu[i]->add(new ControlEntry("Select", &KEY_SELECT[i]));
-			if (joystick[i] != nullptr) {
-				joystickMenu[i] = new Menu;
-				joystickMenu[i]->add(new Entry("<", []{ menu = settingsMenu; }));
-				joystickMenu[i]->add(new Entry("< Keyboard", [=]{ menu = keyboardMenu[i]; useJoystick[i] = false; }));
-				joystickMenu[i]->add(new ControlEntry("Up",     &BTN_UP[i]));
-				joystickMenu[i]->add(new ControlEntry("Down",   &BTN_DOWN[i]));
-				joystickMenu[i]->add(new ControlEntry("Left",   &BTN_LEFT[i]));
-				joystickMenu[i]->add(new ControlEntry("Right",  &BTN_RIGHT[i]));
-				joystickMenu[i]->add(new ControlEntry("A",      &BTN_A[i]));
-				joystickMenu[i]->add(new ControlEntry("B",      &BTN_B[i]));
-				joystickMenu[i]->add(new ControlEntry("Start",  &BTN_START[i]));
-				joystickMenu[i]->add(new ControlEntry("Select", &BTN_SELECT[i]));
-			}
-		}
-		fileMenu = new FileMenu;
-		menu = mainMenu;
+		keys = SDL_GetKeyboardState(0);		
 	}
 	// Render a texture on screen
 	void render_texture(SDL_Texture* texture, int x, int y) {
@@ -975,41 +850,18 @@ namespace GUI {
 		dest.y = y + 5;
 		SDL_RenderCopy(renderer, texture, NULL, &dest);
 	}
-	// Generate a texture from text
-	SDL_Texture* gen_text(std::string text, SDL_Color color) {
-		SDL_Surface* surface = TTF_RenderText_Blended(font, text.c_str(), color);
-		SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surface);
-		SDL_FreeSurface(surface);
-		return texture;
-	}
 	// Get the joypad state from SDL
 	u8 get_joypad_state(int n) {
 		const int DEAD_ZONE = 8000;
 		u8 j = 0;
-		if (useJoystick[n]) {
-			j |= (SDL_JoystickGetButton(joystick[n], BTN_A[n]))      << 0; // A
-			j |= (SDL_JoystickGetButton(joystick[n], BTN_B[n]))      << 1; // B
-			j |= (SDL_JoystickGetButton(joystick[n], BTN_SELECT[n])) << 2; // Select
-			j |= (SDL_JoystickGetButton(joystick[n], BTN_START[n]))  << 3; // Start
-			j |= (SDL_JoystickGetButton(joystick[n], BTN_UP[n]))     << 4; // Up
-			j |= (SDL_JoystickGetAxis(joystick[n], 1) < -DEAD_ZONE)  << 4;
-			j |= (SDL_JoystickGetButton(joystick[n], BTN_DOWN[n]))   << 5; // Down
-			j |= (SDL_JoystickGetAxis(joystick[n], 1) >  DEAD_ZONE)  << 5;
-			j |= (SDL_JoystickGetButton(joystick[n], BTN_LEFT[n]))   << 6; // Left
-			j |= (SDL_JoystickGetAxis(joystick[n], 0) < -DEAD_ZONE)  << 6;
-			j |= (SDL_JoystickGetButton(joystick[n], BTN_RIGHT[n]))  << 7; // Right
-			j |= (SDL_JoystickGetAxis(joystick[n], 0) >  DEAD_ZONE)  << 7;
-		}
-		else {
-			j |= (keys[KEY_A[n]])      << 0;
-			j |= (keys[KEY_B[n]])      << 1;
-			j |= (keys[KEY_SELECT[n]]) << 2;
-			j |= (keys[KEY_START[n]])  << 3;
-			j |= (keys[KEY_UP[n]])     << 4;
-			j |= (keys[KEY_DOWN[n]])   << 5;
-			j |= (keys[KEY_LEFT[n]])   << 6;
-			j |= (keys[KEY_RIGHT[n]])  << 7;
-		}
+		j |= keys[KEY_A] << 0;
+		j |= keys[KEY_B] << 1;
+		j |= keys[KEY_SELECT] << 2;
+		j |= keys[KEY_START] << 3;
+		j |= keys[KEY_UP] << 4;
+		j |= keys[KEY_DOWN] << 5;
+		j |= keys[KEY_LEFT] << 6;
+		j |= keys[KEY_RIGHT] << 7;
 		return j;
 	}
 	// Send the rendered frame to the GUI
@@ -1019,57 +871,24 @@ namespace GUI {
 	void render() {
 		SDL_RenderClear(renderer);
 		// Draw the NES screen
-		if (Cartridge::loaded()) SDL_RenderCopy(renderer, gameTexture, NULL, NULL);
-		else SDL_RenderCopy(renderer, background, NULL, NULL);
-		// Draw the menu
-		if (pause) menu->render();
+		SDL_RenderCopy(renderer, gameTexture, NULL, NULL);
 		SDL_RenderPresent(renderer);
-	}
-	// Play/stop the game
-	void toggle_pause() {
-		pause = not pause, menu = mainMenu;
-		pause ? SDL_SetTextureColorMod(gameTexture, 60, 60, 60) : SDL_SetTextureColorMod(gameTexture, 255, 255, 255);
-	}
-	// Prompt for a key, return the scancode
-	SDL_Scancode query_key() {
-		SDL_Texture* prompt = gen_text("Press a key...", { 255, 255, 255 });
-		render_texture(prompt, TEXT_CENTER, HEIGHT - FONT_SZ*4);
-		SDL_RenderPresent(renderer);
-		SDL_Event e;
-		while (1) {
-			SDL_PollEvent(&e);
-			if (e.type == SDL_KEYDOWN) return e.key.keysym.scancode;
-		}
-	}
-	int query_button() {
-		SDL_Texture* prompt = gen_text("Press a button...", { 255, 255, 255 });
-		render_texture(prompt, TEXT_CENTER, HEIGHT - FONT_SZ*4);
-		SDL_RenderPresent(renderer);
-		SDL_Event e;
-		while (1) {
-			SDL_PollEvent(&e);
-			if (e.type == SDL_JOYBUTTONDOWN) return e.jbutton.button;
-		}
 	}
 	// Run the emulator
-	void run() {
+	void run(const char* file) {
 		SDL_Event e;
-		// Framerate control:
+		// Framerate control
 		u32 frameStart, frameTime;
 		const int FPS   = 60;
 		const int DELAY = 1000.0f / FPS;
-		while (1) {
+		Cartridge::load(file);
+		while (1) {			
 			frameStart = SDL_GetTicks();
 			// Handle events
 			while (SDL_PollEvent(&e)) {
-				switch (e.type) {
-					case SDL_QUIT: return;
-					case SDL_KEYDOWN:
-						if (keys[SDL_SCANCODE_ESCAPE] and Cartridge::loaded()) toggle_pause();
-						else if (pause) menu->update(keys);
-				}
+				if (e.type == SDL_QUIT) return;
 			}
-			if (not pause) CPU::run_frame();
+			CPU::run_frame();
 			render();
 			// Wait to mantain framerate
 			frameTime = SDL_GetTicks() - frameStart;
@@ -1077,187 +896,8 @@ namespace GUI {
 		}
 	}
 }
-namespace GUI {
-	CSimpleIniA ini(true, false, false); // Settings
-	int last_window_size = 1; // Window settings
-	// Controls settings
-	SDL_Scancode KEY_A     [] = { SDL_SCANCODE_A,      SDL_SCANCODE_ESCAPE };
-	SDL_Scancode KEY_B     [] = { SDL_SCANCODE_S,      SDL_SCANCODE_ESCAPE };
-	SDL_Scancode KEY_SELECT[] = { SDL_SCANCODE_SPACE,  SDL_SCANCODE_ESCAPE };
-	SDL_Scancode KEY_START [] = { SDL_SCANCODE_RETURN, SDL_SCANCODE_ESCAPE };
-	SDL_Scancode KEY_UP    [] = { SDL_SCANCODE_UP,     SDL_SCANCODE_ESCAPE };
-	SDL_Scancode KEY_DOWN  [] = { SDL_SCANCODE_DOWN,   SDL_SCANCODE_ESCAPE };
-	SDL_Scancode KEY_LEFT  [] = { SDL_SCANCODE_LEFT,   SDL_SCANCODE_ESCAPE };
-	SDL_Scancode KEY_RIGHT [] = { SDL_SCANCODE_RIGHT,  SDL_SCANCODE_ESCAPE };
-	int BTN_UP    [] = { -1, -1 };
-	int BTN_DOWN  [] = { -1, -1 };
-	int BTN_LEFT  [] = { -1, -1 };
-	int BTN_RIGHT [] = { -1, -1 };
-	int BTN_A     [] = { -1, -1 };
-	int BTN_B     [] = { -1, -1 };
-	int BTN_SELECT[] = { -1, -1 };
-	int BTN_START [] = { -1, -1 };
-	bool useJoystick[] = { false, false };
-	// Ensure config directory exists
-	const char* get_config_path(char* buf, int buflen) {
-		if (!USE_CONFIG_DIR) return CONFIG_FALLBACK; // Bail on the complex stuff if we don't need it
-		// First, get the home directory
-		char homepath[CONFIG_PATH_MAX], path[CONFIG_PATH_MAX];
-		char * home = getenv("HOME");
-		if (home == NULL) return CONFIG_FALLBACK;
-		snprintf(homepath, sizeof(homepath), "%s/.config", home);
-		// Then, .config as a folder
-		int res = mkdir(homepath, CONFIG_DIR_DEFAULT_MODE);
-		int err = errno;
-		if (res == -1 && err != EEXIST) return CONFIG_FALLBACK;
-		snprintf(path, sizeof(path), "%s/%s", homepath, CONFIG_DIR_NAME);
-		// Finally, CONFIG_DIR_NAME as a sub-folder
-		res = mkdir(path, CONFIG_DIR_DEFAULT_MODE);
-		err = errno;
-		if (res == -1 && err != EEXIST) return CONFIG_FALLBACK;
-		snprintf(buf, buflen, "%s/settings", path);
-		return buf;
-	}
-	// Load settings
-	void load_settings() {
-		// Files
-		char path[CONFIG_PATH_MAX];
-		ini.LoadFile(get_config_path(path, sizeof(path)));
-		// Screen settings
-		int screen_size = atoi(ini.GetValue("screen", "size", "1"));
-		if (screen_size < 1 || screen_size > 4) screen_size = 1;
-		set_size(screen_size);
-		// Control settings
-		for (int p = 0; p <= 1; p++) {
-			const char* section = (p == 0) ? "controls p1" : "controls p2";
-			useJoystick[p] = (ini.GetValue(section, "usejoy", "no"))[0] == 'y';
-			if (useJoystick[p]) {
-				BTN_UP[p] = atoi(ini.GetValue(section, "UP", "-1"));
-				BTN_DOWN[p] = atoi(ini.GetValue(section, "DOWN", "-1"));
-				BTN_LEFT[p] = atoi(ini.GetValue(section, "LEFT", "-1"));
-				BTN_RIGHT[p] = atoi(ini.GetValue(section, "RIGHT", "-1"));
-				BTN_A[p] = atoi(ini.GetValue(section, "A", "-1"));
-				BTN_B[p] = atoi(ini.GetValue(section, "B", "-1"));
-				BTN_SELECT[p] = atoi(ini.GetValue(section, "SELECT", "-1"));
-				BTN_START[p] = atoi(ini.GetValue(section, "START", "-1"));
-			}
-			else {
-				KEY_UP[p] = (SDL_Scancode)atoi(ini.GetValue(section, "UP", "82"));
-				KEY_DOWN[p] = (SDL_Scancode)atoi(ini.GetValue(section, "DOWN", "81"));
-				KEY_LEFT[p] = (SDL_Scancode)atoi(ini.GetValue(section, "LEFT", "80"));
-				KEY_RIGHT[p] = (SDL_Scancode)atoi(ini.GetValue(section, "RIGHT", "79"));
-				KEY_A[p] = (SDL_Scancode)atoi(ini.GetValue(section, "A", "4"));
-				KEY_B[p] = (SDL_Scancode)atoi(ini.GetValue(section, "B", "22"));
-				KEY_SELECT[p] = (SDL_Scancode)atoi(ini.GetValue(section, "SELECT", "44"));
-				KEY_START[p] = (SDL_Scancode)atoi(ini.GetValue(section, "START", "40"));
-			}
-		}
-	}
-	// Save settings
-	void save_settings() {
-		// Screen settings
-		char buf[10];
-		sprintf(buf, "%d", last_window_size);
-		ini.SetValue("screen", "size", buf);
-		// Control settings
-		for (int p = 0; p < 2; p++) {
-			const char* section = (p == 0) ? "controls p1" : "controls p2";
-			sprintf(buf, "%d", useJoystick[p] ? BTN_UP[p] : KEY_UP[p]);
-			ini.SetValue(section, "UP", buf);
-			sprintf(buf, "%d", useJoystick[p] ? BTN_DOWN[p] : KEY_DOWN[p]);
-			ini.SetValue(section, "DOWN", buf);
-			sprintf(buf, "%d", useJoystick[p] ? BTN_LEFT[p] : KEY_LEFT[p]);
-			ini.SetValue(section, "LEFT", buf);
-			sprintf(buf, "%d", useJoystick[p] ? BTN_RIGHT[p] : KEY_RIGHT[p]);
-			ini.SetValue(section, "RIGHT", buf);
-			sprintf(buf, "%d", useJoystick[p] ? BTN_A[p] : KEY_A[p]);
-			ini.SetValue(section, "A", buf);
-			sprintf(buf, "%d", useJoystick[p] ? BTN_B[p] : KEY_B[p]);
-			ini.SetValue(section, "B", buf);
-			sprintf(buf, "%d", useJoystick[p] ? BTN_SELECT[p] : KEY_SELECT[p]);
-			ini.SetValue(section, "SELECT", buf);
-			sprintf(buf, "%d", useJoystick[p] ? BTN_START[p] : KEY_START[p]);
-			ini.SetValue(section, "START", buf);
-			ini.SetValue(section, "usejoy", useJoystick[p] ? "yes" : "no");
-		}   
-		char path[CONFIG_PATH_MAX];
-		ini.SaveFile(get_config_path(path, sizeof(path)));
-	}
-}
-namespace GUI {
-	using namespace std;
-	Entry::Entry(string label, function<void()> callback) : callback(callback) { set_label(label); }
-	Entry::~Entry() { SDL_DestroyTexture(whiteTexture), SDL_DestroyTexture(redTexture); }
-	void Entry::set_label(string label) {
-		this->label = label;
-		if (whiteTexture != nullptr) SDL_DestroyTexture(whiteTexture);
-		if (redTexture   != nullptr) SDL_DestroyTexture(redTexture);
-		whiteTexture = gen_text(label, { 255, 255, 255 });
-		redTexture = gen_text(label, { 255, 0, 0 });
-	}
-	void Entry::render(int x, int y) { render_texture(selected ? redTexture : whiteTexture, x, y); }
-	ControlEntry::ControlEntry(string action, SDL_Scancode* key) : key(key),
-	Entry::Entry(action, [&]{ keyEntry->set_label(SDL_GetScancodeName(*(this->key) = query_key())); }) {
-		this->keyEntry = new Entry(SDL_GetScancodeName(*key), []{});
-	}
-	ControlEntry::ControlEntry(string action, int* button) : button(button),
-	Entry::Entry(action, [&]{ keyEntry->set_label(to_string(*(this->button) = query_button())); }) {
-		this->keyEntry = new Entry(to_string(*button), []{});
-	}
-	void Menu::add(Entry* entry) {
-		if (entries.empty()) entry->select();
-		entries.push_back(entry);
-	}
-	void Menu::clear() {
-		for (auto entry : entries) delete entry;
-		entries.clear();
-		cursor = 0;
-	}
-	void Menu::sort_by_label() {
-		if (entries.empty()) return;
-		entries[0]->unselect();
-		sort(entries.begin(), entries.end(), [](Entry* a, Entry* b) { return a->get_label() < b->get_label(); });
-		entries[0]->select();
-	}
-	void Menu::update(u8 const* keys) {
-		int oldCursor = cursor;
-		if (keys[SDL_SCANCODE_DOWN] and cursor < entries.size() - 1) {
-			++cursor;
-			if (cursor == bottom) ++bottom, ++top;
-		}
-		else if (keys[SDL_SCANCODE_UP] and cursor > 0) {
-			--cursor;
-			if (cursor < top) --top, --bottom;
-		}
-		entries[oldCursor]->unselect(), entries[cursor]->select();
-		if (keys[SDL_SCANCODE_RETURN]) entries[cursor]->trigger();
-	}
-	void Menu::render() {
-		for (int i = top; i < entries.size() && i < bottom; ++i) {
-			int y = (i - top) * FONT_SZ;
-			entries[i]->render(TEXT_CENTER, y);
-		}
-	}
-	void FileMenu::change_dir(string dir) {
-		clear();
-		struct dirent* dirp;
-		DIR* dp = opendir(dir.c_str());
-		while ((dirp = readdir(dp)) != NULL) {
-			string name = dirp->d_name, path = dir + "/" + name;
-			if (name[0] == '.' and name != "..") continue;
-			if (dirp->d_type == DT_DIR) add(new Entry(name + "/", [=]{ change_dir(path); }));
-			else if (name.size() > 4 and name.substr(name.size() - 4) == ".nes") {
-				add(new Entry(name, [=]{ Cartridge::load(path.c_str()); toggle_pause(); }));
-			}
-		}
-		closedir(dp), sort_by_label();
-	}
-	FileMenu::FileMenu() { char cwd[512]; change_dir(getcwd(cwd, 512)); }
-}
-
 
 int main(int argc, char *argv[]) {
-	GUI::load_settings();
 	GUI::init();
-	GUI::run();
+	GUI::run(argv[1]);
 }
