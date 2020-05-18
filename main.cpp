@@ -757,7 +757,6 @@ namespace GUI {
 	}
 	// Get the joypad state from SDL
 	u8 get_joypad_state(int n) {
-		const int DEAD_ZONE = 8000;
 		u8 j = 0;
 		j |= keys[KEY_A] << 0; j |= keys[KEY_B] << 1; j |= keys[KEY_SELECT] << 2; j |= keys[KEY_START] << 3;
 		j |= keys[KEY_UP] << 4; j |= keys[KEY_DOWN] << 5; j |= keys[KEY_LEFT] << 6; j |= keys[KEY_RIGHT] << 7;

@@ -6,3 +6,4 @@ roms
 build
 LaiNES
 .vscode
+*.exe
