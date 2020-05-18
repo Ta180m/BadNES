@@ -77,7 +77,7 @@ I really like LaiNES: it's very minimal and compact — but it has several depen
 I'm working on it right now.
 
 ### What do you mean by "nearly complete"?
-I'll say it's complete once I finish implementing the APU and savestates.
+I'll say it's complete once I finish implementing the APU.
 
 ### This game doesn't work!
 Check to make sure BadNES implements its mapper. Also, Mapper 7 is known to be especially buggy.

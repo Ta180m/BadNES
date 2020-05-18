@@ -33,6 +33,9 @@ namespace CPU {
 	};
 	int dmc_read(void*, cpu_addr_t addr);
 	void set_nmi(bool v = true), set_irq(bool v = true), power(), run_frame();
+	// Save states
+	struct save_state {	u8 A, X, Y, S, ram[0x800]; u16 PC; CPU::Flags P; bool nmi, irq; };
+	void save(), load();
 }
 namespace PPU {
 	enum Scanline  { VISIBLE, POST, NMI, PRE };
@@ -83,7 +86,7 @@ namespace Joypad {
 namespace GUI {
 	const unsigned WIDTH  = 256, HEIGHT = 240; // Screen size
 	int query_button();
-	void init(), run();
+	void init(), run(), save(), load();
 	void new_frame(u32* pixels);
 	u8 get_joypad_state(int n);
 	SDL_Scancode query_key();
@@ -285,6 +288,7 @@ namespace APU {
 }
 namespace CPU {
 	u8 A, X, Y, S, ram[0x800]; u16 PC; Flags P; bool nmi, irq; // CPU state
+	save_state ss; // Save state
 	// Remaining clocks to end frame
 	const int TOTAL_CYCLES = 29781; int remainingCycles;
 	inline int elapsed() { return TOTAL_CYCLES - remainingCycles; }
@@ -466,6 +470,16 @@ namespace CPU {
 			exec();
 		}
 	}
+	// Save state
+	void save() {
+		ss.A = A, ss.X = X, ss.Y = Y, ss.S = S, ss.PC = PC, ss.P = P, ss.nmi = nmi, ss.irq = irq;
+		memcpy(ss.ram, ram, sizeof ram);
+	}
+	// Load state
+	void load() {
+		A = ss.A, X = ss.X, Y = ss.Y, S = ss.S, PC = ss.PC, P = ss.P, nmi = ss.nmi, irq = ss.irq;
+		memcpy(ram, ss.ram, sizeof ram);
+	}	
 }
 namespace PPU {
 	u32 nesRgb[] = { 0x7C7C7C, 0x0000FC, 0x0000BC, 0x4428BC, 0x940084, 0xA80020, 0xA81000, 0x881400,
@@ -764,6 +778,7 @@ namespace GUI {
 	u8 const* keys;
 	SDL_Scancode KEY_A = SDL_SCANCODE_A, KEY_B = SDL_SCANCODE_S, KEY_SELECT = SDL_SCANCODE_SPACE, KEY_START = SDL_SCANCODE_RETURN;
 	SDL_Scancode KEY_UP = SDL_SCANCODE_UP, KEY_DOWN = SDL_SCANCODE_DOWN, KEY_LEFT = SDL_SCANCODE_LEFT, KEY_RIGHT = SDL_SCANCODE_RIGHT;
+	SDL_Scancode KEY_LOAD = SDL_SCANCODE_Q, KEY_SAVE = SDL_SCANCODE_W; // Saving and loading
 	// Initialize GUI
 	void init() {
 		// Initialize graphics system
@@ -792,19 +807,32 @@ namespace GUI {
 		SDL_RenderCopy(renderer, gameTexture, NULL, NULL);
 		SDL_RenderPresent(renderer);
 	}
+	// Save state
+	void save() {
+		CPU::save();
+		// save PPU
+	}
+	// Load state
+	void load() {
+		CPU::load();
+		// load PPU
+	}
 	// Run the emulator
 	void run(const char* file) {
 		SDL_Event e;
 		// Framerate control
 		u32 frameStart, frameTime;
-		const int FPS   = 60;
-		const int DELAY = 1000.0f / FPS;
+		const int FPS = 60, DELAY = 1000.0f / FPS;
 		Cartridge::load(file);
 		while (1) {			
 			frameStart = SDL_GetTicks();
 			// Handle events
 			while (SDL_PollEvent(&e)) {
 				if (e.type == SDL_QUIT) return;
+				if (e.type == SDL_KEYDOWN) {
+					if (keys[KEY_SAVE]) save();
+					else if (keys[KEY_LOAD]) load();
+				}
 			}
 			CPU::run_frame();
 			render();
