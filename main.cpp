@@ -123,17 +123,12 @@ template <int pageKBs> void Mapper::map_prg(int slot, int bank) {
 	if (bank < 0) bank = (prgSize / (0x400*pageKBs)) + bank;
 	for (int i = 0; i < (pageKBs/8); i++) prgMap[(pageKBs/8) * slot + i] = (pageKBs*0x400*bank + 0x2000*i) % prgSize;
 }
-template void Mapper::map_prg<32>(int, int);
-template void Mapper::map_prg<16>(int, int);
-template void Mapper::map_prg<8> (int, int);
+template void Mapper::map_prg<32>(int, int); template void Mapper::map_prg<16>(int, int); template void Mapper::map_prg<8> (int, int);
 // CHR mapping functions
 template <int pageKBs> void Mapper::map_chr(int slot, int bank) {
 	for (int i = 0; i < pageKBs; i++) chrMap[pageKBs*slot + i] = (pageKBs*0x400*bank + 0x400*i) % chrSize;
 }
-template void Mapper::map_chr<8>(int, int);
-template void Mapper::map_chr<4>(int, int);
-template void Mapper::map_chr<2>(int, int);
-template void Mapper::map_chr<1>(int, int);
+template void Mapper::map_chr<8>(int, int); template void Mapper::map_chr<4>(int, int); template void Mapper::map_chr<2>(int, int); template void Mapper::map_chr<1>(int, int);
 class Mapper0 : public Mapper {
 	public: Mapper0(u8* rom) : Mapper(rom) { map_prg<32>(0, 0); map_chr<8> (0, 0); }
 };
@@ -535,7 +530,8 @@ namespace PPU {
 				case 4:  res = oamMem[oamAddr]; break; // OAMDATA ($2004)
 				case 7:                                // PPUDATA ($2007)
 					if (vAddr.addr <= 0x3EFF) res = buffer, buffer = rd(vAddr.addr);
-					else res = buffer = rd(vAddr.addr),	vAddr.addr += ctrl.incr ? 32 : 1;
+					else res = buffer = rd(vAddr.addr);
+					vAddr.addr += ctrl.incr ? 32 : 1;
 			}
 		}
 		return res;
@@ -799,7 +795,4 @@ namespace GUI {
 	}
 }
 
-int main(int argc, char *argv[]) {
-	GUI::init();
-	GUI::run(argv[1]);
-}
+int main(int argc, char *argv[]) { GUI::init(); GUI::run(argv[1]); }
