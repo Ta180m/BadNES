@@ -61,6 +61,7 @@ BadNES implements the most common mappers, which should be enough for a good per
 - UxROM (Mapper 002)
 - CNROM (Mapper 003)
 - MMC3, MMC6 / TxROM (Mapper 004)
+- AxROM (Mapper 007) (Not well supported, expect bugs!)
 
 You can check the compatibility for each ROM in the following list:
 http://tuxnes.sourceforge.net/nesmapper.txt
@@ -77,6 +78,9 @@ I'm working on it right now.
 
 ### What do you mean by "nearly complete"?
 I'll say it's complete once I finish implementing the APU and savestates.
+
+### This game doesn't work!
+Check to make sure BadNES implements its mapper. Also, Mapper 7 is known to be especially buggy.
 
 ## Credits
 Special thanks to [Andrea Orru](https://github.com/AndreaOrru) for creating [LaiNES](https://github.com/AndreaOrru/LaiNES), the emulator that this project derives much of its code from.

@@ -730,12 +730,12 @@ namespace Cartridge {
 		int mapperNum = (rom[7] & 0xF0) | (rom[6] >> 4);
 		if (mapper != nullptr) delete mapper;
 		switch (mapperNum) {
-			case 0:  mapper = new Mapper0(rom); break;
-			case 1:  mapper = new Mapper1(rom); break;
-			case 2:  mapper = new Mapper2(rom); break;
-			case 3:  mapper = new Mapper3(rom); break;
-			case 4:  mapper = new Mapper4(rom); break;
-			case 7:  mapper = new Mapper7(rom); break;
+			case 0: mapper = new Mapper0(rom); break;
+			case 1: mapper = new Mapper1(rom); break;
+			case 2: mapper = new Mapper2(rom); break;
+			case 3: mapper = new Mapper3(rom); break;
+			case 4: mapper = new Mapper4(rom); break;
+			case 7: mapper = new Mapper7(rom); break;
 		}
 		CPU::power(), PPU::reset();
 	}
