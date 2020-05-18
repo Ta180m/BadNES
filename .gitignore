@@ -5,3 +5,4 @@ roms
 *.nes
 build
 LaiNES
+.vscode
