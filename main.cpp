@@ -9,22 +9,18 @@
 */
 
 #include <bits/stdc++.h>
-#include <sys/stat.h>
-#include <dirent.h>
-#include <unistd.h>
 #include <SDL2/SDL.h>
-#include "NES_Apu.h"
-#include "Sound_Queue.h"
 #define NTH_BIT(x, n) (((x) >> (n)) & 1)
 typedef uint8_t  u8;  typedef int8_t  s8;
 typedef uint16_t u16; typedef int16_t s16;
 typedef uint32_t u32; typedef int32_t s32;
 typedef uint64_t u64; typedef int64_t s64;
+typedef long     cpu_time_t; // CPU clock cycle count
+typedef unsigned cpu_addr_t; // 16-bit memory address
 
 // Initial declarations
 namespace APU {
 	template <bool write> u8 access(int elapsed, u16 addr, u8 v = 0);
-	void run_frame(int elapsed), reset(), init();
 }
 namespace CPU {
 	enum IntType { NMI, RESET, IRQ, BRK }; // Interrupt type.
@@ -98,15 +94,13 @@ namespace Cartridge {
 	void signal_scanline(), load(const char *fileName);
 }
 namespace Joypad {
-	u8 read_state(int n);
-	void write_strobe(bool v);
+	u8 read_state(int n); void write_strobe(bool v);
 }
 namespace GUI {
 	const unsigned WIDTH  = 256, HEIGHT = 240; // Screen size
-	const int TEXT_CENTER = -1, TEXT_RIGHT = -2;
 	int query_button();
 	void init(), run();
-	void render_texture(SDL_Texture* texture, int x, int y), new_frame(u32* pixels), new_samples(const blip_sample_t* samples, size_t count);
+	void new_frame(u32* pixels);
 	u8 get_joypad_state(int n);
 	SDL_Scancode query_key();
 }
@@ -290,24 +284,9 @@ public:
 
 // Actual code
 namespace APU {
-	Nes_Apu apu; Blip_Buffer buf;
 	const int OUT_SIZE = 4096;
-	blip_sample_t outBuf[OUT_SIZE];
-	void init() {
-		buf.sample_rate(96000); buf.clock_rate(1789773);
-		apu.output(&buf); apu.dmc_reader(CPU::dmc_read);
-	}
-	void reset() { apu.reset(); buf.clear(); }
-	template <bool write> u8 access(int elapsed, u16 addr, u8 v) {
-		if (write) apu.write_register(elapsed, addr, v);
-		else if (addr == apu.status_addr) v = apu.read_status(elapsed);
-		return v;
-	}
+	template <bool write> u8 access(int elapsed, u16 addr, u8 v) { return v; }
 	template u8 access<0>(int, u16, u8); template u8 access<1>(int, u16, u8);
-	void run_frame(int elapsed) {
-		apu.end_frame(elapsed); buf.end_frame(elapsed);
-		if (buf.samples_avail() >= OUT_SIZE) GUI::new_samples(outBuf, buf.read_samples(outBuf, OUT_SIZE));
-	}
 }
 namespace CPU {
 	u8 A, X, Y, S, ram[0x800]; u16 PC; Flags P; bool nmi, irq; // CPU state
@@ -429,85 +408,46 @@ namespace CPU {
 	// Execute a CPU instruction
 	void exec() {
 		switch (rd(PC++)) { // Fetch the opcode and select the right function to emulate the instruction:
-			case 0x00: return INT<BRK>()  ;  case 0x01: return ORA<izx>()  ;
-			case 0x05: return ORA<zp>()   ;  case 0x06: return ASL<zp>()   ;
-			case 0x08: return PHP()       ;  case 0x09: return ORA<imm>()  ;
-			case 0x0A: return ASL_A()     ;  case 0x0D: return ORA<abs>()  ;
-			case 0x0E: return ASL<abs>()  ;  case 0x10: return br<N,0>()   ;
-			case 0x11: return ORA<izy>()  ;  case 0x15: return ORA<zpx>()  ;
-			case 0x16: return ASL<zpx>()  ;  case 0x18: return flag<C,0>() ;
-			case 0x19: return ORA<aby>()  ;  case 0x1D: return ORA<abx>()  ;
-			case 0x1E: return ASL<_abx>() ;  case 0x20: return JSR()       ;
-			case 0x21: return AND<izx>()  ;  case 0x24: return BIT<zp>()   ;
-			case 0x25: return AND<zp>()   ;  case 0x26: return ROL<zp>()   ;
-			case 0x28: return PLP()       ;  case 0x29: return AND<imm>()  ;
-			case 0x2A: return ROL_A()     ;  case 0x2C: return BIT<abs>()  ;
-			case 0x2D: return AND<abs>()  ;  case 0x2E: return ROL<abs>()  ;
-			case 0x30: return br<N,1>()   ;  case 0x31: return AND<izy>()  ;
-			case 0x35: return AND<zpx>()  ;  case 0x36: return ROL<zpx>()  ;
-			case 0x38: return flag<C,1>() ;  case 0x39: return AND<aby>()  ;
-			case 0x3D: return AND<abx>()  ;  case 0x3E: return ROL<_abx>() ;
-			case 0x40: return RTI()       ;  case 0x41: return EOR<izx>()  ;
-			case 0x45: return EOR<zp>()   ;  case 0x46: return LSR<zp>()   ;
-			case 0x48: return PHA()       ;  case 0x49: return EOR<imm>()  ;
-			case 0x4A: return LSR_A()     ;  case 0x4C: return JMP()       ;
-			case 0x4D: return EOR<abs>()  ;  case 0x4E: return LSR<abs>()  ;
-			case 0x50: return br<V,0>()   ;  case 0x51: return EOR<izy>()  ;
-			case 0x55: return EOR<zpx>()  ;  case 0x56: return LSR<zpx>()  ;
-			case 0x58: return flag<I,0>() ;  case 0x59: return EOR<aby>()  ;
-			case 0x5D: return EOR<abx>()  ;  case 0x5E: return LSR<_abx>() ;
-			case 0x60: return RTS()       ;  case 0x61: return ADC<izx>()  ;
-			case 0x65: return ADC<zp>()   ;  case 0x66: return ROR<zp>()   ;
-			case 0x68: return PLA()       ;  case 0x69: return ADC<imm>()  ;
-			case 0x6A: return ROR_A()     ;  case 0x6C: return JMP_IND()   ;
-			case 0x6D: return ADC<abs>()  ;  case 0x6E: return ROR<abs>()  ;
-			case 0x70: return br<V,1>()   ;  case 0x71: return ADC<izy>()  ;
-			case 0x75: return ADC<zpx>()  ;  case 0x76: return ROR<zpx>()  ;
-			case 0x78: return flag<I,1>() ;  case 0x79: return ADC<aby>()  ;
-			case 0x7D: return ADC<abx>()  ;  case 0x7E: return ROR<_abx>() ;
-			case 0x81: return st<A,izx>() ;  case 0x84: return st<Y,zp>()  ;
-			case 0x85: return st<A,zp>()  ;  case 0x86: return st<X,zp>()  ;
-			case 0x88: return dec<Y>()    ;  case 0x8A: return tr<X,A>()   ;
-			case 0x8C: return st<Y,abs>() ;  case 0x8D: return st<A,abs>() ;
-			case 0x8E: return st<X,abs>() ;  case 0x90: return br<C,0>()   ;
-			case 0x91: return st<A,izy>() ;  case 0x94: return st<Y,zpx>() ;
-			case 0x95: return st<A,zpx>() ;  case 0x96: return st<X,zpy>() ;
-			case 0x98: return tr<Y,A>()   ;  case 0x99: return st<A,aby>() ;
-			case 0x9A: return tr<X,S>()   ;  case 0x9D: return st<A,abx>() ;
-			case 0xA0: return ld<Y,imm>() ;  case 0xA1: return ld<A,izx>() ;
-			case 0xA2: return ld<X,imm>() ;  case 0xA4: return ld<Y,zp>()  ;
-			case 0xA5: return ld<A,zp>()  ;  case 0xA6: return ld<X,zp>()  ;
-			case 0xA8: return tr<A,Y>()   ;  case 0xA9: return ld<A,imm>() ;
-			case 0xAA: return tr<A,X>()   ;  case 0xAC: return ld<Y,abs>() ;
-			case 0xAD: return ld<A,abs>() ;  case 0xAE: return ld<X,abs>() ;
-			case 0xB0: return br<C,1>()   ;  case 0xB1: return ld<A,izy>() ;
-			case 0xB4: return ld<Y,zpx>() ;  case 0xB5: return ld<A,zpx>() ;
-			case 0xB6: return ld<X,zpy>() ;  case 0xB8: return flag<V,0>() ;
-			case 0xB9: return ld<A,aby>() ;  case 0xBA: return tr<S,X>()   ;
-			case 0xBC: return ld<Y,abx>() ;  case 0xBD: return ld<A,abx>() ;
-			case 0xBE: return ld<X,aby>() ;  case 0xC0: return cmp<Y,imm>();
-			case 0xC1: return cmp<A,izx>();  case 0xC4: return cmp<Y,zp>() ;
-			case 0xC5: return cmp<A,zp>() ;  case 0xC6: return DEC<zp>()   ;
-			case 0xC8: return inc<Y>()    ;  case 0xC9: return cmp<A,imm>();
-			case 0xCA: return dec<X>()    ;  case 0xCC: return cmp<Y,abs>();
-			case 0xCD: return cmp<A,abs>();  case 0xCE: return DEC<abs>()  ;
-			case 0xD0: return br<Z,0>()   ;  case 0xD1: return cmp<A,izy>();
-			case 0xD5: return cmp<A,zpx>();  case 0xD6: return DEC<zpx>()  ;
-			case 0xD8: return flag<D,0>() ;  case 0xD9: return cmp<A,aby>();
-			case 0xDD: return cmp<A,abx>();  case 0xDE: return DEC<_abx>() ;
-			case 0xE0: return cmp<X,imm>();  case 0xE1: return SBC<izx>()  ;
-			case 0xE4: return cmp<X,zp>() ;  case 0xE5: return SBC<zp>()   ;
-			case 0xE6: return INC<zp>()   ;  case 0xE8: return inc<X>()    ;
-			case 0xE9: return SBC<imm>()  ;  case 0xEA: return NOP()       ;
-			case 0xEC: return cmp<X,abs>();  case 0xED: return SBC<abs>()  ;
-			case 0xEE: return INC<abs>()  ;  case 0xF0: return br<Z,1>()   ;
-			case 0xF1: return SBC<izy>()  ;  case 0xF5: return SBC<zpx>()  ;
-			case 0xF6: return INC<zpx>()  ;  case 0xF8: return flag<D,1>() ;
-			case 0xF9: return SBC<aby>()  ;  case 0xFD: return SBC<abx>()  ;
-			case 0xFE: return INC<_abx>() ;
-			default:
-				std::cout << "Invalid Opcode! PC: " << PC << " Opcode: 0x" << std::hex << (int)(rd(PC - 1)) << "\n";
-				return NOP();
+			case 0x00: return INT<BRK>()  ; case 0x01: return ORA<izx>()  ; case 0x05: return ORA<zp>()   ; case 0x06: return ASL<zp>()   ;
+			case 0x08: return PHP()       ; case 0x09: return ORA<imm>()  ;	case 0x0A: return ASL_A()     ; case 0x0D: return ORA<abs>()  ;
+			case 0x0E: return ASL<abs>()  ; case 0x10: return br<N,0>()   ;	case 0x11: return ORA<izy>()  ; case 0x15: return ORA<zpx>()  ;
+			case 0x16: return ASL<zpx>()  ; case 0x18: return flag<C,0>() ;	case 0x19: return ORA<aby>()  ; case 0x1D: return ORA<abx>()  ;
+			case 0x1E: return ASL<_abx>() ; case 0x20: return JSR()       ;	case 0x21: return AND<izx>()  ; case 0x24: return BIT<zp>()   ;
+			case 0x25: return AND<zp>()   ; case 0x26: return ROL<zp>()   ;	case 0x28: return PLP()       ; case 0x29: return AND<imm>()  ;
+			case 0x2A: return ROL_A()     ; case 0x2C: return BIT<abs>()  ;	case 0x2D: return AND<abs>()  ; case 0x2E: return ROL<abs>()  ;
+			case 0x30: return br<N,1>()   ; case 0x31: return AND<izy>()  ;	case 0x35: return AND<zpx>()  ; case 0x36: return ROL<zpx>()  ;
+			case 0x38: return flag<C,1>() ; case 0x39: return AND<aby>()  ;	case 0x3D: return AND<abx>()  ; case 0x3E: return ROL<_abx>() ;
+			case 0x40: return RTI()       ; case 0x41: return EOR<izx>()  ;	case 0x45: return EOR<zp>()   ; case 0x46: return LSR<zp>()   ;
+			case 0x48: return PHA()       ; case 0x49: return EOR<imm>()  ;	case 0x4A: return LSR_A()     ; case 0x4C: return JMP()       ;
+			case 0x4D: return EOR<abs>()  ; case 0x4E: return LSR<abs>()  ; case 0x50: return br<V,0>()   ; case 0x51: return EOR<izy>()  ;
+			case 0x55: return EOR<zpx>()  ; case 0x56: return LSR<zpx>()  ; case 0x58: return flag<I,0>() ; case 0x59: return EOR<aby>()  ;
+			case 0x5D: return EOR<abx>()  ; case 0x5E: return LSR<_abx>() ;	case 0x60: return RTS()       ; case 0x61: return ADC<izx>()  ;
+			case 0x65: return ADC<zp>()   ; case 0x66: return ROR<zp>()   ;	case 0x68: return PLA()       ; case 0x69: return ADC<imm>()  ;
+			case 0x6A: return ROR_A()     ; case 0x6C: return JMP_IND()   ;	case 0x6D: return ADC<abs>()  ; case 0x6E: return ROR<abs>()  ;
+			case 0x70: return br<V,1>()   ; case 0x71: return ADC<izy>()  ;	case 0x75: return ADC<zpx>()  ; case 0x76: return ROR<zpx>()  ;
+			case 0x78: return flag<I,1>() ; case 0x79: return ADC<aby>()  ;	case 0x7D: return ADC<abx>()  ; case 0x7E: return ROR<_abx>() ;
+			case 0x81: return st<A,izx>() ; case 0x84: return st<Y,zp>()  ;	case 0x85: return st<A,zp>()  ; case 0x86: return st<X,zp>()  ;
+			case 0x88: return dec<Y>()    ; case 0x8A: return tr<X,A>()   ;	case 0x8C: return st<Y,abs>() ; case 0x8D: return st<A,abs>() ;
+			case 0x8E: return st<X,abs>() ; case 0x90: return br<C,0>()   ;	case 0x91: return st<A,izy>() ; case 0x94: return st<Y,zpx>() ;
+			case 0x95: return st<A,zpx>() ; case 0x96: return st<X,zpy>() ;	case 0x98: return tr<Y,A>()   ; case 0x99: return st<A,aby>() ;
+			case 0x9A: return tr<X,S>()   ; case 0x9D: return st<A,abx>() ;	case 0xA0: return ld<Y,imm>() ; case 0xA1: return ld<A,izx>() ;
+			case 0xA2: return ld<X,imm>() ; case 0xA4: return ld<Y,zp>()  ;	case 0xA5: return ld<A,zp>()  ; case 0xA6: return ld<X,zp>()  ;
+			case 0xA8: return tr<A,Y>()   ; case 0xA9: return ld<A,imm>() ;	case 0xAA: return tr<A,X>()   ; case 0xAC: return ld<Y,abs>() ;
+			case 0xAD: return ld<A,abs>() ; case 0xAE: return ld<X,abs>() ;	case 0xB0: return br<C,1>()   ; case 0xB1: return ld<A,izy>() ;
+			case 0xB4: return ld<Y,zpx>() ; case 0xB5: return ld<A,zpx>() ;	case 0xB6: return ld<X,zpy>() ; case 0xB8: return flag<V,0>() ;
+			case 0xB9: return ld<A,aby>() ; case 0xBA: return tr<S,X>()   ;	case 0xBC: return ld<Y,abx>() ; case 0xBD: return ld<A,abx>() ;
+			case 0xBE: return ld<X,aby>() ; case 0xC0: return cmp<Y,imm>();	case 0xC1: return cmp<A,izx>(); case 0xC4: return cmp<Y,zp>() ;
+			case 0xC5: return cmp<A,zp>() ; case 0xC6: return DEC<zp>()   ;	case 0xC8: return inc<Y>()    ; case 0xC9: return cmp<A,imm>();
+			case 0xCA: return dec<X>()    ; case 0xCC: return cmp<Y,abs>();	case 0xCD: return cmp<A,abs>(); case 0xCE: return DEC<abs>()  ;
+			case 0xD0: return br<Z,0>()   ; case 0xD1: return cmp<A,izy>();	case 0xD5: return cmp<A,zpx>(); case 0xD6: return DEC<zpx>()  ;
+			case 0xD8: return flag<D,0>() ; case 0xD9: return cmp<A,aby>();	case 0xDD: return cmp<A,abx>(); case 0xDE: return DEC<_abx>() ;
+			case 0xE0: return cmp<X,imm>(); case 0xE1: return SBC<izx>()  ;	case 0xE4: return cmp<X,zp>() ; case 0xE5: return SBC<zp>()   ;
+			case 0xE6: return INC<zp>()   ; case 0xE8: return inc<X>()    ;	case 0xE9: return SBC<imm>()  ; case 0xEA: return NOP()       ;
+			case 0xEC: return cmp<X,abs>(); case 0xED: return SBC<abs>()  ;	case 0xEE: return INC<abs>()  ; case 0xF0: return br<Z,1>()   ;
+			case 0xF1: return SBC<izy>()  ; case 0xF5: return SBC<zpx>()  ;	case 0xF6: return INC<zpx>()  ; case 0xF8: return flag<D,1>() ;
+			case 0xF9: return SBC<aby>()  ; case 0xFD: return SBC<abx>()  ;	case 0xFE: return INC<_abx>() ; default:
+			std::cout << "Invalid Opcode! PC: " << PC << " Opcode: 0x" << std::hex << (int)(rd(PC - 1)) << "\n";
+			return NOP();
 		}
 	}
 	void set_nmi(bool v) { nmi = v; }
@@ -530,11 +470,17 @@ namespace CPU {
 			else if (irq and !P[I]) INT<IRQ>();
 			exec();
 		}
-		APU::run_frame(elapsed());
 	}
 }
 namespace PPU {
-	#include "palette.inc"
+	u32 nesRgb[] = { 0x7C7C7C, 0x0000FC, 0x0000BC, 0x4428BC, 0x940084, 0xA80020, 0xA81000, 0x881400,
+					 0x503000, 0x007800, 0x006800, 0x005800, 0x004058, 0x000000, 0x000000, 0x000000,
+					 0xBCBCBC, 0x0078F8, 0x0058F8, 0x6844FC, 0xD800CC, 0xE40058, 0xF83800, 0xE45C10,
+					 0xAC7C00, 0x00B800, 0x00A800, 0x00A844, 0x008888, 0x000000, 0x000000, 0x000000,
+					 0xF8F8F8, 0x3CBCFC, 0x6888FC, 0x9878F8, 0xF878F8, 0xF85898, 0xF87858, 0xFCA044,
+					 0xF8B800, 0xB8F818, 0x58D854, 0x58F898, 0x00E8D8, 0x787878, 0x000000, 0x000000,
+					 0xFCFCFC, 0xA4E4FC, 0xB8B8F8, 0xD8B8F8, 0xF8B8F8, 0xF8A4C0, 0xF0D0B0, 0xFCE0A8,
+					 0xF8D878, 0xD8F878, 0xB8F8B8, 0xB8F8D8, 0x00FCFC, 0xF8D8F8, 0x000000, 0x000000 };
 	Mirroring mirroring; // Mirroring mode
 	u8 ciRam[0x800], cgRam[0x20], oamMem[0x100]; // VRAM for nametables, palettes, sprite properties
 	Sprite oam[8], secOam[8]; // Sprite buffers
@@ -796,7 +742,7 @@ namespace Cartridge {
 			case 3:  mapper = new Mapper3(rom); break;
 			case 4:  mapper = new Mapper4(rom); break;
 		}
-		CPU::power(), PPU::reset(), APU::reset();
+		CPU::power(), PPU::reset();
 	}
 }
 namespace Joypad {
@@ -821,7 +767,6 @@ namespace GUI {
 	SDL_Renderer* renderer;
 	SDL_Texture* gameTexture;
 	u8 const* keys;
-	Sound_Queue* soundQueue;
 	SDL_Scancode KEY_A = SDL_SCANCODE_A, KEY_B = SDL_SCANCODE_S, KEY_SELECT = SDL_SCANCODE_SPACE, KEY_START = SDL_SCANCODE_RETURN;
 	SDL_Scancode KEY_UP = SDL_SCANCODE_UP, KEY_DOWN = SDL_SCANCODE_DOWN, KEY_LEFT = SDL_SCANCODE_LEFT, KEY_RIGHT = SDL_SCANCODE_RIGHT;
 	// Initialize GUI
@@ -829,43 +774,23 @@ namespace GUI {
 		// Initialize graphics system
 		SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK);
 		SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
-		APU::init();
-		soundQueue = new Sound_Queue;
-		soundQueue->init(96000);
 		// Initialize graphics structures
-		window = SDL_CreateWindow  ("BadNES", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
+		window = SDL_CreateWindow("BadNES", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
 		renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 		SDL_RenderSetLogicalSize(renderer, WIDTH, HEIGHT);
 		gameTexture = SDL_CreateTexture (renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
 		keys = SDL_GetKeyboardState(0);		
 	}
-	// Render a texture on screen
-	void render_texture(SDL_Texture* texture, int x, int y) {
-		int w, h; SDL_Rect dest;
-		SDL_QueryTexture(texture, NULL, NULL, &dest.w, &dest.h);
-		if (x == TEXT_CENTER) dest.x = WIDTH/2 - dest.w/2;
-		else if (x == TEXT_RIGHT) dest.x = WIDTH - dest.w - 10;
-		else dest.x = x + 10;
-		dest.y = y + 5;
-		SDL_RenderCopy(renderer, texture, NULL, &dest);
-	}
 	// Get the joypad state from SDL
 	u8 get_joypad_state(int n) {
 		const int DEAD_ZONE = 8000;
 		u8 j = 0;
-		j |= keys[KEY_A] << 0;
-		j |= keys[KEY_B] << 1;
-		j |= keys[KEY_SELECT] << 2;
-		j |= keys[KEY_START] << 3;
-		j |= keys[KEY_UP] << 4;
-		j |= keys[KEY_DOWN] << 5;
-		j |= keys[KEY_LEFT] << 6;
-		j |= keys[KEY_RIGHT] << 7;
+		j |= keys[KEY_A] << 0; j |= keys[KEY_B] << 1; j |= keys[KEY_SELECT] << 2; j |= keys[KEY_START] << 3;
+		j |= keys[KEY_UP] << 4; j |= keys[KEY_DOWN] << 5; j |= keys[KEY_LEFT] << 6; j |= keys[KEY_RIGHT] << 7;
 		return j;
 	}
 	// Send the rendered frame to the GUI
 	void new_frame(u32* pixels) { SDL_UpdateTexture(gameTexture, NULL, pixels, WIDTH * sizeof(u32)); }
-	void new_samples(const blip_sample_t* samples, size_t count) { soundQueue->write(samples, count); }
 	// Render the screen
 	void render() {
 		SDL_RenderClear(renderer);
