@@ -23,10 +23,9 @@ namespace APU {
 	template <bool write> u8 access(int elapsed, u16 addr, u8 v = 0);
 }
 namespace CPU {
-	enum IntType { NMI, RESET, IRQ, BRK }; // Interrupt type.
-	typedef u16 (*Mode)(void); // Addressing mode.
-	// Processor flags
-	enum Flag {C, Z, I, D, V, N};
+	enum IntType { NMI, RESET, IRQ, BRK }; // Interrupt type
+	typedef u16 (*Mode)(void); // Addressing mode
+	enum Flag { C, Z, I, D, V, N }; // Processor flags
 	class Flags { bool f[6]; public:
 		bool& operator[] (const int i) { return f[i]; }
 		u8 get() { return f[C] | f[Z] << 1 | f[I] << 2 | f[D] << 3 | 1 << 5 | f[V] << 6 | f[N] << 7; }
@@ -44,44 +43,29 @@ namespace PPU {
 	};
 	union Ctrl { // PPUCTRL ($2000) register
 		struct {
-			unsigned nt     : 2; // Nametable ($2000 / $2400 / $2800 / $2C00)
-			unsigned incr   : 1; // Address increment (1 / 32)
-			unsigned sprTbl : 1; // Sprite pattern table ($0000 / $1000)
-			unsigned bgTbl  : 1; // BG pattern table ($0000 / $1000)
-			unsigned sprSz  : 1; // Sprite size (8x8 / 8x16)
-			unsigned slave  : 1; // PPU master/slave
-			unsigned nmi    : 1; // Enable NMI
+			// Nametable, Address increment, Sprite pattern table, BG pattern table, Sprite size, PPU master/slave, Enable NMI 
+			unsigned nt : 2, incr : 1, sprTbl : 1, bgTbl : 1, sprSz : 1, slave : 1, nmi : 1;
 		};
 		u8 r;
 	};
 	union Mask { // PPUMASK ($2001) register
 		struct {
-			unsigned gray    : 1; // Grayscale
-			unsigned bgLeft  : 1; // Show background in leftmost 8 pixels
-			unsigned sprLeft : 1; // Show sprite in leftmost 8 pixels
-			unsigned bg      : 1; // Show background
-			unsigned spr     : 1; // Show sprites
-			unsigned red     : 1; // Intensify reds
-			unsigned green   : 1; // Intensify greens
-			unsigned blue    : 1; // Intensify blues
+			// Grayscale; Show background in leftmost 8 pixels, sprite in leftmost 8 pixels, background, sprites; Intensify reds, greens, blues
+			unsigned gray : 1, bgLeft : 1, sprLeft : 1, bg : 1, spr : 1, red : 1, green : 1, blue : 1;
 		};
 		u8 r;
 	};
 	union Status { // PPUSTATUS ($2002) register
 		struct {
-			unsigned bus    : 5; // Not significant
-			unsigned sprOvf : 1; // Sprite overflow
-			unsigned sprHit : 1; // Sprite 0 Hit
-			unsigned vBlank : 1; // In VBlank?
+			// Not significant, Sprite overflow, Sprite 0 Hit, In VBlank
+			unsigned bus : 5, sprOvf : 1, sprHit : 1, vBlank : 1;
 		};
 		u8 r;
 	};
 	union Addr { // Loopy's VRAM address
 		struct {
-			unsigned cX : 5; // Coarse X
-			unsigned cY : 5; // Coarse Y
-			unsigned nt : 2; // Nametable
-			unsigned fY : 3; // Fine Y
+			// Coarse X, Coarse Y, Nametable, Fine Y
+			unsigned cX : 5, cY : 5, nt : 2, fY : 3;
 		};
 		struct { unsigned l : 8, h : 7; };
 		unsigned addr : 14, r : 15;
@@ -107,8 +91,7 @@ namespace GUI {
 
 // Mappers
 class Mapper {
-	u8* rom;
-	bool chrRam = false;
+	u8* rom; bool chrRam = false;
 protected:
 	u8 *prg, *chr, *prgRam;
 	u32 prgSize, chrSize, prgRamSize, prgMap[4], chrMap[8];
@@ -117,9 +100,8 @@ protected:
 public:
 	Mapper(u8* rom);
 	~Mapper();
-	u8 read(u16 addr);
+	u8 read(u16 addr), chr_read(u16 addr);
 	virtual u8 write(u16 addr, u8 v) { return v; }
-	u8 chr_read(u16 addr);
 	virtual u8 chr_write(u16 addr, u8 v) { return v; }
 	virtual void signal_scanline() {}
 };
@@ -156,7 +138,7 @@ class Mapper0 : public Mapper {
 	public: Mapper0(u8* rom) : Mapper(rom) { map_prg<32>(0, 0); map_chr<8> (0, 0); }
 };
 class Mapper1 : public Mapper {
-	int writeN; u8 tmpReg; u8 regs[4];
+	int writeN; u8 tmpReg, regs[4];
 	// Apply the registers state 
 	void apply() {
 		if (regs[0] & 0b1000) { // 16KB PRG
@@ -486,13 +468,11 @@ namespace PPU {
 	Sprite oam[8], secOam[8]; // Sprite buffers
 	u32 pixels[256 * 240];    // Video buffer
 	Addr vAddr, tAddr; // Loopy V, T
-	u8 fX;             // Fine X
-	u8 oamAddr;        // OAM address
+	u8 fX, oamAddr; // Fine X, OAM address
 	Ctrl ctrl;     // PPUCTRL   ($2000) register
 	Mask mask;     // PPUMASK   ($2001) register
 	Status status; // PPUSTATUS ($2002) register
-	u8 nt, at, bgL, bgH; // Background latches
-	u8 atShiftL, atShiftH; u16 bgShiftL, bgShiftH; // Background shift registers
+	u8 nt, at, bgL, bgH, atShiftL, atShiftH; u16 bgShiftL, bgShiftH; // Background latches, shift registers
 	bool atLatchL, atLatchH;
 	int scanline, dot; bool frameOdd; // Rendering counters
 	inline bool rendering() { return mask.bg || mask.spr; }
@@ -546,7 +526,7 @@ namespace PPU {
 					if (!latch) { tAddr.h = v & 0x3F; }             // First write
 					else        { tAddr.l = v; vAddr.r = tAddr.r; } // Second write
 					latch = !latch; break;
-				case 7:  wr(vAddr.addr, v); vAddr.addr += ctrl.incr ? 32 : 1;  // PPUDATA ($2007)
+				case 7: wr(vAddr.addr, v); vAddr.addr += ctrl.incr ? 32 : 1; // PPUDATA ($2007)
 			}
 		}
 		else { // Read from register
@@ -710,9 +690,7 @@ namespace PPU {
 		frameOdd = false;
 		scanline = dot = 0;
 		ctrl.r = mask.r = status.r = 0;
-		memset(pixels, 0x00, sizeof(pixels));
-		memset(ciRam,  0xFF, sizeof(ciRam));
-		memset(oamMem, 0x00, sizeof(oamMem));
+		memset(pixels, 0x00, sizeof(pixels)); memset(ciRam,  0xFF, sizeof(ciRam)); memset(oamMem, 0x00, sizeof(oamMem));
 	}
 }
 namespace Cartridge {
