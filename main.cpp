@@ -778,7 +778,7 @@ namespace GUI {
 	u8 const* keys;
 	SDL_Scancode KEY_A = SDL_SCANCODE_A, KEY_B = SDL_SCANCODE_S, KEY_SELECT = SDL_SCANCODE_SPACE, KEY_START = SDL_SCANCODE_RETURN;
 	SDL_Scancode KEY_UP = SDL_SCANCODE_UP, KEY_DOWN = SDL_SCANCODE_DOWN, KEY_LEFT = SDL_SCANCODE_LEFT, KEY_RIGHT = SDL_SCANCODE_RIGHT;
-	SDL_Scancode KEY_LOAD = SDL_SCANCODE_Q, KEY_SAVE = SDL_SCANCODE_W; // Saving and loading
+	SDL_Scancode KEY_SAVE = SDL_SCANCODE_Q, KEY_LOAD = SDL_SCANCODE_W; // Saving and loading
 	// Initialize GUI
 	void init() {
 		// Initialize graphics system
