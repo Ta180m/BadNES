@@ -36,13 +36,13 @@ C++                              1              5             85            708
 ### *nix systems
 ```sh
 git clone --recursive https://github.com/Ta180m/BadNES && cd BadNES
-g++ main.cpp -o badnes -std=c++11 -lSDL2main -lSDL2
+g++ main.cpp -o badnes -std=c++11 -lSDL2main -lSDL2 -O3
 ```
 
 ### Windows
 ```sh
 git clone --recursive https://github.com/Ta180m/BadNES && cd BadNES
-g++ main.cpp -o badnes -std=c++11 -IC:\mingw\include\SDL2 -LC:\mingw\lib -w -Wl,-subsystem,windows -lmingw32 -lSDL2main -lSDL2
+g++ main.cpp -o badnes -std=c++11 -IC:\mingw\include\SDL2 -LC:\mingw\lib -w -Wl,-subsystem,windows -lmingw32 -lSDL2main -lSDL2 -O3
 ```
 
 ## Usage
@@ -72,7 +72,7 @@ I really like LaiNES: it's very minimal and compact — but it has several depen
 I'm working on it right now.
 
 ### What do you mean by "nearly complete"?
-I'll say it's complete once I finish implementing the APU, savestates, and maybe Mapper 7.
+I'll say it's complete once I finish implementing the APU and savestates.
 
 ## Credits
 Special thanks to [Andrea Orru](https://github.com/AndreaOrru) for creating [LaiNES](https://github.com/AndreaOrru/LaiNES), the emulator that this project derives much of its code from.

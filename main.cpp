@@ -36,7 +36,7 @@ namespace CPU {
 }
 namespace PPU {
 	enum Scanline  { VISIBLE, POST, NMI, PRE };
-	enum Mirroring { VERTICAL, HORIZONTAL };
+	enum Mirroring { VERTICAL, HORIZONTAL, ONE_SCREEN_HI, ONE_SCREEN_LO, FOUR_SCREEN };
 	struct Sprite { // Sprite buffer
 		// Index in OAM, X position, Y position, Tile index, Attributes, Tile data (low), Tile data (high)
 		u8 id, x, y, tile, attr, dataL, dataH;
@@ -146,8 +146,10 @@ class Mapper1 : public Mapper {
 		if (regs[0] & 0b10000) { map_chr<4>(0, regs[1]); map_chr<4>(1, regs[2]); } // 4KB CHR
 		else map_chr<8>(0, regs[1] >> 1); // 8KB CHR
 		switch (regs[0] & 0b11) { // Set mirroring
-			case 2: set_mirroring(PPU::VERTICAL);   break;
-			case 3: set_mirroring(PPU::HORIZONTAL); break;
+			case 0: set_mirroring(PPU::ONE_SCREEN_LO); break;
+			case 1: set_mirroring(PPU::ONE_SCREEN_HI); break;
+        	case 2: set_mirroring(PPU::VERTICAL);      break;
+        	case 3: set_mirroring(PPU::HORIZONTAL);    break;
 		}
 	}
 public:
@@ -257,6 +259,22 @@ public:
 		irqCounter == 0 ? irqCounter = irqPeriod : --irqCounter;
 		if (irqEnabled and irqCounter == 0)	CPU::set_irq();
 	}
+};
+class Mapper7 : public Mapper {
+    u8 regs[1];
+	// Apply the registers state
+    void apply() {
+    	map_prg<32>(0, regs[0] & 0b00001111); // 32 kb PRG ROM Banks, 0x8000 - 0xFFFF swappable
+    	map_chr<8>(0, 0); // 8k of CHR (ram)
+    	set_mirroring((regs[0] & 0b00010000) ? PPU::ONE_SCREEN_HI : PPU::ONE_SCREEN_LO); // Mirroring based on bit 5
+	}
+public:
+    Mapper7(u8* rom) : Mapper(rom) { regs[0] = 0; apply(); }
+	u8 write(u16 addr, u8 v) {
+    	if (addr & 0x8000) { regs[0] = v; apply(); } // Bank switching
+    	return v;
+	}
+	u8 chr_write(u16 addr, u8 v) { return chr[addr] = v; }
 };
 
 // Actual code
@@ -477,6 +495,8 @@ namespace PPU {
 		switch (mirroring) {
 			case VERTICAL:   return addr % 0x800;
 			case HORIZONTAL: return ((addr / 2) & 0x400) + (addr % 0x400);
+			case ONE_SCREEN_LO:
+        	case ONE_SCREEN_HI: return ((addr & 0x3ff) + ((mirroring == ONE_SCREEN_HI) ? 0x400 : 0x0)) - 0x2000;
 			default:         return addr - 0x2000;
 		}
 	}
@@ -715,6 +735,7 @@ namespace Cartridge {
 			case 2:  mapper = new Mapper2(rom); break;
 			case 3:  mapper = new Mapper3(rom); break;
 			case 4:  mapper = new Mapper4(rom); break;
+			case 7:  mapper = new Mapper7(rom); break;
 		}
 		CPU::power(), PPU::reset();
 	}
