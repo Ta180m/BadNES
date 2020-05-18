@@ -66,13 +66,13 @@ http://tuxnes.sourceforge.net/nesmapper.txt
 http://www.usaco.org/index.php?page=viewproblem2&cpid=1041
 
 ### Why did you do this?
-I really like LaiNES: it's very minimal and compact -- but it has several dependencies, so I try to write the shortest NES emulator possible, in a single source file.
+I really like LaiNES: it's very minimal and compact — but it has several dependencies, so I try to write the shortest NES emulator possible, in a single source file.
 
 ### There's no sound!
 I'm working on it right now.
 
 ### What do you mean by "nearly complete"?
-I will declare it complete once I finish implementing the APU, savestates, and maybe Mapper 7.
+I'll say it's complete once I finish implementing the APU, savestates, and maybe Mapper 7.
 
 ## Credits
 Special thanks to [Andrea Orru](https://github.com/AndreaOrru) for creating [LaiNES](https://github.com/AndreaOrru/LaiNES), the emulator that this project derives much of its code from.
