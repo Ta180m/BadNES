@@ -16,11 +16,11 @@ cloc main.cpp
        1 unique file.                              
        0 files ignored.
 
-github.com/AlDanial/cloc v 1.74  T=0.03 s (30.8 files/s, 24595.5 lines/s)
+github.com/AlDanial/cloc v 1.74  T=0.04 s (25.1 files/s, 20506.9 lines/s)
 -------------------------------------------------------------------------------
 Language                     files          blank        comment           code
 -------------------------------------------------------------------------------
-C++                              1              5             85            708
+C++                              1              5             86            727
 -------------------------------------------------------------------------------
 ```
 
@@ -46,9 +46,13 @@ g++ main.cpp -o badnes -std=c++11 -IC:\mingw\include\SDL2 -LC:\mingw\lib -w -Wl,
 ```
 
 ## Usage
+### *nix systems
 ```sh
-./badnes [path to rom]
+./badnes [path to ROM]
 ```
+
+### Windows
+Drag ROM over `badnes.exe`
 
 ## Compatibility
 BadNES implements the most common mappers, which should be enough for a good percentage of the games:
