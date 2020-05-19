@@ -5,7 +5,7 @@
  |  _ < / _` |/ _` | . ` |  __|  \___ \ 
  | |_) | (_| | (_| | |\  | |____ ____) |
  |____/ \__,_|\__,_|_| \_|______|_____/ 
-				EMULATOR
+                EMULATOR
 ```
 
 A nearly complete NES emulator in a single 700-line C++ source file, based on [LaiNES](https://github.com/AndreaOrru/LaiNES).
@@ -16,16 +16,17 @@ cloc main.cpp
        1 unique file.                              
        0 files ignored.
 
-github.com/AlDanial/cloc v 1.74  T=0.04 s (25.1 files/s, 20506.9 lines/s)
+github.com/AlDanial/cloc v 1.74  T=0.03 s (33.6 files/s, 27684.4 lines/s)
 -------------------------------------------------------------------------------
 Language                     files          blank        comment           code
 -------------------------------------------------------------------------------
-C++                              1              5             86            727
+C++                              1              6             60            757
 -------------------------------------------------------------------------------
 ```
 
 ## Features
 - Cycle accurate
+- Savestates (beta, expect bugs)
 - Extremely compact: only 700 lines in one source file with no dependencies
 
 ## Requirements
@@ -54,17 +55,22 @@ g++ main.cpp -o badnes -std=c++11 -IC:\mingw\include\SDL2 -LC:\mingw\lib -w -Wl,
 ### Windows
 Drag ROM over `badnes.exe`
 
+Alternatively, use
+```sh
+badnes.exe [path to ROM]
+```
+
 ## Controls
-        UP  -  UP
-      DOWN  -  DOWN
-      LEFT  -  LEFT
-     RIGHT  -  RIGHT
-         A  -  A
-         B  -  S
-     START  -  ENTER
-    SELECT  -  SPACE
-SAVE STATE  -  Q
-LOAD STATE  -  W
+            UP  -  UP
+          DOWN  -  DOWN
+          LEFT  -  LEFT
+         RIGHT  -  RIGHT
+             A  -  A
+             B  -  S
+         START  -  ENTER
+        SELECT  -  SPACE
+    SAVE STATE  -  Q
+    LOAD STATE  -  W
 
 ## Compatibility
 BadNES implements the most common mappers, which should be enough for a good percentage of the games:
