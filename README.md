@@ -27,10 +27,12 @@ C++                              1              6             60            757
 ## Features
 - Cycle accurate
 - Savestates (beta, expect bugs)
-- Extremely compact: only 700 lines in one source file with no dependencies
+- Extremely compact: only 750 lines in one source file with no dependencies
 
 ## Usage
 First, head over to the release tab and grab a release. Releases marked as `beta` may be unstable!
+
+If a release doesn't work, you can also build it yourself, as described below.
 
 ### *nix systems
 ```sh
@@ -44,8 +46,6 @@ Alternatively, use
 ```sh
 badnes.exe [path to ROM]
 ```
-
-If it doesn't work you can also build it yourself, as described below.
 
 ## Controls
             UP  -  UP
