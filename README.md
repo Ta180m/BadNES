@@ -26,8 +26,9 @@ C++                              1              6             60            757
 
 ## Features
 - Cycle accurate
-- Savestates (beta, expect bugs)
-- Extremely compact: only 750 lines in one source file with no dependencies
+- Savestates (Beta, expect bugs!)
+- Supports Mappers 0, 1, 2, 3, 4, and 7
+- Extremely minimal: only 750 lines in one source file with no dependencies
 
 ## Usage
 First, head over to the release tab and grab a release. Releases marked as `beta` may be unstable!
@@ -66,7 +67,7 @@ BadNES implements the most common mappers, which should be enough for a good per
 - UxROM (Mapper 002)
 - CNROM (Mapper 003)
 - MMC3, MMC6 / TxROM (Mapper 004)
-- AxROM (Mapper 007) (Not well supported, expect bugs!)
+- AxROM (Mapper 007) (Beta, expect bugs!)
 
 You can check the compatibility for each ROM in the following list:
 http://tuxnes.sourceforge.net/nesmapper.txt
@@ -96,13 +97,16 @@ http://www.usaco.org/index.php?page=viewproblem2&cpid=1041
 I really like LaiNES: it's very minimal and compact — but it has several dependencies, so I try to write the shortest NES emulator possible, in a single source file.
 
 ### There's no sound!
-I'm working on it right now.
+I'm working on it right now. You can also check out the `sound` branch, although it's still in a very early stage right now.
 
 ### What do you mean by "nearly complete"?
 I'll say it's complete once I finish implementing the APU.
 
 ### This game doesn't work!
-Check to make sure BadNES implements its mapper. Also, Mapper 7 is known to be especially buggy.
+Check to make sure BadNES implements its mapper.
+
+### Mapper 7 / Savestates / etc. doesn't work!
+Those features are still in `beta` right now so expect bugs.
 
 ## Credits
 Special thanks to [Andrea Orru](https://github.com/AndreaOrru) for creating [LaiNES](https://github.com/AndreaOrru/LaiNES), the emulator that this project derives much of its code from.
