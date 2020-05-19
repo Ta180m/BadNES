@@ -8,7 +8,7 @@
                 EMULATOR
 ```
 
-A nearly complete NES emulator in a single 700-line C++ source file, based on [LaiNES](https://github.com/AndreaOrru/LaiNES).
+A nearly complete NES emulator in a single 750-line C++ source file, based on [LaiNES](https://github.com/AndreaOrru/LaiNES).
 
 ```
 cloc main.cpp
@@ -29,24 +29,9 @@ C++                              1              6             60            757
 - Savestates (beta, expect bugs)
 - Extremely compact: only 700 lines in one source file with no dependencies
 
-## Requirements
-- C++11
-- SDL2
-
-## Building
-### *nix systems
-```sh
-git clone --recursive https://github.com/Ta180m/BadNES && cd BadNES
-g++ main.cpp -o badnes -std=c++11 -lSDL2main -lSDL2 -O3
-```
-
-### Windows
-```sh
-git clone --recursive https://github.com/Ta180m/BadNES && cd BadNES
-g++ main.cpp -o badnes -std=c++11 -IC:\mingw\include\SDL2 -LC:\mingw\lib -w -Wl,-subsystem,windows -lmingw32 -lSDL2main -lSDL2 -O3
-```
-
 ## Usage
+First, head over to the release tab and grab a release. Releases marked as `beta` may be unstable!
+
 ### *nix systems
 ```sh
 ./badnes [path to ROM]
@@ -59,6 +44,8 @@ Alternatively, use
 ```sh
 badnes.exe [path to ROM]
 ```
+
+If it doesn't work you can also build it yourself, as described below.
 
 ## Controls
             UP  -  UP
@@ -83,6 +70,23 @@ BadNES implements the most common mappers, which should be enough for a good per
 
 You can check the compatibility for each ROM in the following list:
 http://tuxnes.sourceforge.net/nesmapper.txt
+
+## Building
+### Requirements
+- C++11
+- SDL2
+
+### *nix systems
+```sh
+git clone --recursive https://github.com/Ta180m/BadNES && cd BadNES
+g++ main.cpp -o badnes -std=c++11 -lSDL2main -lSDL2 -O3
+```
+
+### Windows
+```sh
+git clone --recursive https://github.com/Ta180m/BadNES && cd BadNES
+g++ main.cpp -o badnes -std=c++11 -IC:\mingw\include\SDL2 -LC:\mingw\lib -w -Wl,-subsystem,windows -lmingw32 -lSDL2main -lSDL2 -O3
+```
 
 ## FAQ
 ### Why the name?
