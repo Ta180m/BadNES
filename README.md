@@ -54,6 +54,18 @@ g++ main.cpp -o badnes -std=c++11 -IC:\mingw\include\SDL2 -LC:\mingw\lib -w -Wl,
 ### Windows
 Drag ROM over `badnes.exe`
 
+## Controls
+        UP  -  UP
+      DOWN  -  DOWN
+      LEFT  -  LEFT
+     RIGHT  -  RIGHT
+         A  -  A
+         B  -  S
+     START  -  ENTER
+    SELECT  -  SPACE
+SAVE STATE  -  Q
+LOAD STATE  -  W
+
 ## Compatibility
 BadNES implements the most common mappers, which should be enough for a good percentage of the games:
 - NROM (Mapper 000)

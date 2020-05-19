@@ -75,6 +75,9 @@ namespace PPU {
 	};
 	template <bool write> u8 access(u16 index, u8 v = 0);
 	void set_mirroring(Mirroring mode), step(), reset();
+	// Save states
+	struct save_state { u8 ciRam[0x800], cgRam[0x20], oamMem[0x100]; Sprite oam[8], secOam[8]; u32 pixels[256 * 240]; Ctrl ctrl; Mask mask; Status status; };
+	void save(), load();
 }
 namespace Cartridge {
 	template <bool wr> u8 access(u16 addr, u8 v = 0); template <bool wr> u8 chr_access(u16 addr, u8 v = 0);
@@ -121,14 +124,12 @@ Mapper::~Mapper() { delete rom; delete prgRam; if (chrRam) delete chr; }
 // Access to memory
 u8 Mapper::read(u16 addr) { return addr >= 0x8000 ? prg[prgMap[(addr - 0x8000) / 0x2000] + ((addr - 0x8000) % 0x2000)] : prgRam[addr - 0x6000]; }
 u8 Mapper::chr_read(u16 addr) { return chr[chrMap[addr / 0x400] + (addr % 0x400)]; }
-// PRG mapping functions
-template <int pageKBs> void Mapper::map_prg(int slot, int bank) {
+template <int pageKBs> void Mapper::map_prg(int slot, int bank) { // PRG mapping functions
 	if (bank < 0) bank = (prgSize / (0x400*pageKBs)) + bank;
 	for (int i = 0; i < (pageKBs/8); i++) prgMap[(pageKBs/8) * slot + i] = (pageKBs*0x400*bank + 0x2000*i) % prgSize;
 }
 template void Mapper::map_prg<32>(int, int); template void Mapper::map_prg<16>(int, int); template void Mapper::map_prg<8> (int, int);
-// CHR mapping functions
-template <int pageKBs> void Mapper::map_chr(int slot, int bank) {
+template <int pageKBs> void Mapper::map_chr(int slot, int bank) { // CHR mapping functions
 	for (int i = 0; i < pageKBs; i++) chrMap[pageKBs*slot + i] = (pageKBs*0x400*bank + 0x400*i) % chrSize;
 }
 template void Mapper::map_chr<8>(int, int); template void Mapper::map_chr<4>(int, int); template void Mapper::map_chr<2>(int, int); template void Mapper::map_chr<1>(int, int);
@@ -137,8 +138,7 @@ class Mapper0 : public Mapper {
 };
 class Mapper1 : public Mapper {
 	int writeN; u8 tmpReg, regs[4];
-	// Apply the registers state 
-	void apply() {
+	void apply() { // Apply the registers state 
 		if (regs[0] & 0b1000) { // 16KB PRG
 			// 0x8000 swappable, 0xC000 fixed to bank 0x0F
 			if (regs[0] & 0b100) { map_prg<16>(0, regs[3] & 0xF); map_prg<16>(1, 0xF); }
@@ -176,8 +176,7 @@ public:
 };
 class Mapper2 : public Mapper {
 	u8 regs[1]; bool vertical_mirroring;
-	// Apply the registers state
-	void apply() {
+	void apply() { // Apply the registers state
 		// 16 kb PRG ROM Banks: 0x8000 - 0xBFFF swappable, 0xC000 - 0xFFFF fixed
 		map_prg<16>(0, regs[0] & 0xF); map_prg<16>(1, 0xF);
 		map_chr<8>(0, 0); // 8k of CHR
@@ -197,8 +196,7 @@ public:
 };
 class Mapper3 : public Mapper {
 	u8 regs[1]; bool vertical_mirroring, PRG_size_16k;
-	// Apply the registers state
-	void apply() {
+	void apply() { // Apply the registers state
 		if (PRG_size_16k) {	map_prg<16>(0,0); map_prg<16>(1,0); } // mirror the bottom on the top: 0x8000 - 0xBFFF == 0xC000 - 0xFFFF
 		else { map_prg<16>(0,0); map_prg<16>(1,1); } // no mirroring
 		map_chr<8>(0, regs[0] & 0b11); // 8k bankswitched CHR		
@@ -219,8 +217,7 @@ public:
 };
 class Mapper4 : public Mapper {
 	u8 reg8000, regs[8], irqPeriod, irqCounter; bool horizMirroring, irqEnabled;
-	// Apply the registers state
-	void apply() {
+	void apply() { // Apply the registers state
 		map_prg<8>(1, regs[7]);
 		if (!(reg8000 & (1 << 6))) { map_prg<8>(0, regs[6]); map_prg<8>(2, -2); } // PRG Mode 0
 		else { map_prg<8>(0, -2); map_prg<8>(2, regs[6]); } // PRG Mode 1
@@ -265,8 +262,8 @@ public:
 };
 class Mapper7 : public Mapper {
     u8 regs[1];
-	// Apply the registers state
-    void apply() {
+	
+    void apply() { // Apply the registers state
     	map_prg<32>(0, regs[0] & 0b00001111); // 32 kb PRG ROM Banks, 0x8000 - 0xFFFF swappable
     	map_chr<8>(0, 0); // 8k of CHR (ram)
     	set_mirroring((regs[0] & 0b00010000) ? PPU::ONE_SCREEN_HI : PPU::ONE_SCREEN_LO); // Mirroring based on bit 5
@@ -293,7 +290,7 @@ namespace CPU {
 	const int TOTAL_CYCLES = 29781; int remainingCycles;
 	inline int elapsed() { return TOTAL_CYCLES - remainingCycles; }
 	// Cycle emulation
-	#define T   tick()
+	#define T tick()
 	inline void tick() { PPU::step(); PPU::step(); PPU::step(); remainingCycles--; }
 	// Flags updating
 	inline void upd_cv(u8 x, u8 y, s16 r) { P[C] = (r>0xFF); P[V] = ~(x^y) & (x^r) & 0x80; }
@@ -376,8 +373,7 @@ namespace CPU {
 	void PHP() { T; push(P.get() | (1 << 4)); } // B flag set.
 	void PLA() { T; T; A = pop(); upd_nz(A);  }
 	void PHA() { T; push(A); }
-	// Flow control (branches, jumps)
-	template<Flag f, bool v> void br() { 
+	template<Flag f, bool v> void br() { // Flow control (branches, jumps)
 		s8 j = rd(imm()); 
 		if (P[f] == v) {
 			if (cross(PC, j)) T;
@@ -404,8 +400,7 @@ namespace CPU {
 		if (t == NMI) nmi = false;
 	}
 	void NOP() { T; }
-	// Execute a CPU instruction
-	void exec() {
+	void exec() { // Execute a CPU instruction
 		switch (rd(PC++)) { // Fetch the opcode and select the right function to emulate the instruction:
 			case 0x00: return INT<BRK>()  ; case 0x01: return ORA<izx>()  ; case 0x05: return ORA<zp>()   ; case 0x06: return ASL<zp>()   ;
 			case 0x08: return PHP()       ; case 0x09: return ORA<imm>()  ;	case 0x0A: return ASL_A()     ; case 0x0D: return ORA<abs>()  ;
@@ -452,8 +447,7 @@ namespace CPU {
 	void set_nmi(bool v) { nmi = v; }
 	void set_irq(bool v) { irq = v; }
 	int dmc_read(void*, cpu_addr_t addr) { return access<0>(addr); }
-	// Turn on the CPU
-	void power() {
+	void power() { // Turn on the CPU
 		remainingCycles = 0;
 		P.set(0x04);
 		A = X = Y = S = 0x00;
@@ -461,8 +455,7 @@ namespace CPU {
 		nmi = irq = false;
 		INT<RESET>();
 	}
-	// Run the CPU for roughly a frame
-	void run_frame() {
+	void run_frame() { // Run the CPU for roughly a frame
 		remainingCycles += TOTAL_CYCLES;
 		while (remainingCycles > 0) {
 			if (nmi) INT<NMI>();
@@ -470,13 +463,11 @@ namespace CPU {
 			exec();
 		}
 	}
-	// Save state
-	void save() {
+	void save() { // Save state
 		ss.A = A, ss.X = X, ss.Y = Y, ss.S = S, ss.PC = PC, ss.P = P, ss.nmi = nmi, ss.irq = irq;
 		memcpy(ss.ram, ram, sizeof ram);
 	}
-	// Load state
-	void load() {
+	void load() { // Load state
 		A = ss.A, X = ss.X, Y = ss.Y, S = ss.S, PC = ss.PC, P = ss.P, nmi = ss.nmi, irq = ss.irq;
 		memcpy(ram, ss.ram, sizeof ram);
 	}	
@@ -493,7 +484,7 @@ namespace PPU {
 	Mirroring mirroring; // Mirroring mode
 	u8 ciRam[0x800], cgRam[0x20], oamMem[0x100]; // VRAM for nametables, palettes, sprite properties
 	Sprite oam[8], secOam[8]; // Sprite buffers
-	u32 pixels[256 * 240];    // Video buffer
+	u32 pixels[256 * 240]; // Video buffer
 	Addr vAddr, tAddr; // Loopy V, T
 	u8 fX, oamAddr; // Fine X, OAM address
 	Ctrl ctrl;     // PPUCTRL   ($2000) register
@@ -502,10 +493,10 @@ namespace PPU {
 	u8 nt, at, bgL, bgH, atShiftL, atShiftH; u16 bgShiftL, bgShiftH; // Background latches, shift registers
 	bool atLatchL, atLatchH;
 	int scanline, dot; bool frameOdd; // Rendering counters
+	save_state ss;
 	inline bool rendering() { return mask.bg || mask.spr; }
 	inline int spr_height() { return ctrl.sprSz ? 16 : 8; }
-	// Get CIRAM address according to mirroring
-	u16 nt_mirror(u16 addr) {
+	u16 nt_mirror(u16 addr) { // Get CIRAM address according to mirroring
 		switch (mirroring) {
 			case VERTICAL:   return addr % 0x800;
 			case HORIZONTAL: return ((addr / 2) & 0x400) + (addr % 0x400);
@@ -515,8 +506,7 @@ namespace PPU {
 		}
 	}
 	void set_mirroring(Mirroring mode) { mirroring = mode; }
-	// Access PPU memory
-	u8 rd(u16 addr) {
+	u8 rd(u16 addr) { // Access PPU memory
 		switch (addr) {
 			case 0x0000 ... 0x1FFF: return Cartridge::chr_access<0>(addr);  // CHR-ROM/RAM
 			case 0x2000 ... 0x3EFF: return ciRam[nt_mirror(addr)];          // Nametables
@@ -535,12 +525,10 @@ namespace PPU {
 				cgRam[addr & 0x1F] = v; break;
 		}
 	}
-	// Access PPU through registers
-	template <bool write> u8 access(u16 index, u8 v) {
+	template <bool write> u8 access(u16 index, u8 v) { // Access PPU through registers
 		static u8 res, buffer; // VRAM read buffer
 		static bool latch;  // Detect second reading
-		// Write into register
-		if (write) {
+		if (write) { // Write into register
 			res = v;
 			switch (index) {
 				case 0:  ctrl.r = v; tAddr.nt = ctrl.nt; break;    // PPUCTRL   ($2000)
@@ -590,21 +578,18 @@ namespace PPU {
 	// Copy scrolling data from loopy T to loopy V
 	inline void h_update() { if (!rendering()) return; vAddr.r = (vAddr.r & ~0x041F) | (tAddr.r & 0x041F); }
 	inline void v_update() { if (!rendering()) return; vAddr.r = (vAddr.r & ~0x7BE0) | (tAddr.r & 0x7BE0); }
-	// Put new data into the shift registers
-	inline void reload_shift() {
+	inline void reload_shift() { // Put new data into the shift registers
 		bgShiftL = (bgShiftL & 0xFF00) | bgL, bgShiftH = (bgShiftH & 0xFF00) | bgH;
 		atLatchL = (at & 1), atLatchH = (at & 2);
 	}
-	// Clear secondary OAM
-	void clear_oam() {
+	void clear_oam() { // Clear secondary OAM
 		for (int i = 0; i < 8; i++) {
 			secOam[i].id = 64;
 			secOam[i].y = secOam[i].tile = secOam[i].attr = secOam[i].x = 0xFF;
 			secOam[i].dataL = secOam[i].dataH = 0;
 		}
 	}
-	// Fill secondary OAM with the sprite infos for the next scanline
-	void eval_sprites() {
+	void eval_sprites() { // Fill secondary OAM with the sprite infos for the next scanline
 		int n = 0;
 		for (int i = 0; i < 64; i++) {
 			int line = (scanline == 261 ? -1 : scanline) - oamMem[i*4 + 0];
@@ -619,8 +604,7 @@ namespace PPU {
 			}
 		}
 	}
-	// Load the sprite info into primary OAM and fetch their tile data
-	void load_sprites() {
+	void load_sprites() { // Load the sprite info into primary OAM and fetch their tile data
 		u16 addr;
 		for (int i = 0; i < 8; i++)	{
 			oam[i] = secOam[i]; // Copy secondary OAM into primary
@@ -633,8 +617,7 @@ namespace PPU {
 			oam[i].dataL = rd(addr + 0), oam[i].dataH = rd(addr + 8);
 		}
 	}
-	// Process a pixel, draw it if it's on screen
-	void pixel() {
+	void pixel() { // Process a pixel, draw it if it's on screen
 		u8 palette = 0, objPalette = 0;
 		bool objPriority = 0;
 		int x = dot - 2;
@@ -664,8 +647,7 @@ namespace PPU {
 		bgShiftL <<= 1, bgShiftH <<= 1;
 		atShiftL = (atShiftL << 1) | atLatchL, atShiftH = (atShiftH << 1) | atLatchH;
 	}
-	// Execute a cycle of a scanline
-	template<Scanline s> void scanline_cycle() {
+	template<Scanline s> void scanline_cycle() { // Execute a cycle of a scanline
 		static u16 addr;
 		if (s == NMI and dot == 1) { status.vBlank = true; if (ctrl.nmi) CPU::set_nmi(); }
 		else if (s == POST and dot == 0) GUI::new_frame(pixels);
@@ -706,8 +688,7 @@ namespace PPU {
 			if (dot == 260 && rendering()) Cartridge::signal_scanline(); // Signal scanline to mapper
 		}
 	}
-	// Execute a PPU cycle
-	void step() {
+	void step() { // Execute a PPU cycle
 		switch (scanline) {
 			case 0 ... 239:  scanline_cycle<VISIBLE>(); break;
 			case       240:  scanline_cycle<POST>();    break;
@@ -716,11 +697,21 @@ namespace PPU {
 		}		
 		if (++dot > 340) { dot %= 341; if (++scanline > 261) scanline = 0, frameOdd ^= 1; } // Update dot and scanline counters
 	}
-	void reset() {
+	void reset() { // Reset PPU
 		frameOdd = false;
 		scanline = dot = 0;
 		ctrl.r = mask.r = status.r = 0;
-		memset(pixels, 0x00, sizeof(pixels)); memset(ciRam,  0xFF, sizeof(ciRam)); memset(oamMem, 0x00, sizeof(oamMem));
+		memset(pixels, 0x00, sizeof(pixels)), memset(ciRam,  0xFF, sizeof(ciRam)), memset(oamMem, 0x00, sizeof(oamMem));
+	}
+	void save() { // Save state
+		memcpy(ss.ciRam, ciRam, sizeof ciRam), memcpy(ss.cgRam, cgRam, sizeof cgRam), memcpy(ss.oamMem, oamMem, sizeof oamMem);
+		memcpy(ss.oam, oam, sizeof oam), memcpy(ss.secOam, secOam, sizeof secOam), memcpy(ss.pixels, pixels, sizeof pixels);
+		ss.ctrl = ctrl, ss.mask = mask, ss.status = status;
+	}
+	void load() { // Load state
+		memcpy(ciRam, ss.ciRam, sizeof ciRam), memcpy(cgRam, ss.cgRam, sizeof cgRam), memcpy(oamMem, ss.oamMem, sizeof oamMem);
+		memcpy(oam, ss.oam, sizeof oam), memcpy(secOam, ss.secOam, sizeof secOam), memcpy(pixels, ss.pixels, sizeof pixels);
+		ctrl = ss.ctrl, mask = ss.mask, status = ss.status;
 	}
 }
 namespace Cartridge {
@@ -732,8 +723,7 @@ namespace Cartridge {
 	template <bool wr> u8 chr_access(u16 addr, u8 v) { return !wr ? mapper->chr_read(addr) : mapper->chr_write(addr, v); }
 	template u8 chr_access<0>(u16, u8); template u8 chr_access<1>(u16, u8);
 	void signal_scanline() { mapper->signal_scanline(); }
-	// Load the ROM from a file.
-	void load(const char* fileName) {
+	void load(const char* fileName) { // Load the ROM from a file
 		FILE* f = fopen(fileName, "rb");
 		fseek(f, 0, SEEK_END);
 		int size = ftell(f);
@@ -772,15 +762,14 @@ namespace Joypad {
 }
 namespace GUI {
 	// SDL structures
-	SDL_Window* window;
-	SDL_Renderer* renderer;
-	SDL_Texture* gameTexture;
-	u8 const* keys;
+	SDL_Window *window;
+	SDL_Renderer *renderer;
+	SDL_Texture *gameTexture, *saveGameTexture;
+	u8 const *keys;
 	SDL_Scancode KEY_A = SDL_SCANCODE_A, KEY_B = SDL_SCANCODE_S, KEY_SELECT = SDL_SCANCODE_SPACE, KEY_START = SDL_SCANCODE_RETURN;
 	SDL_Scancode KEY_UP = SDL_SCANCODE_UP, KEY_DOWN = SDL_SCANCODE_DOWN, KEY_LEFT = SDL_SCANCODE_LEFT, KEY_RIGHT = SDL_SCANCODE_RIGHT;
 	SDL_Scancode KEY_SAVE = SDL_SCANCODE_Q, KEY_LOAD = SDL_SCANCODE_W; // Saving and loading
-	// Initialize GUI
-	void init() {
+	void init() { // Initialize GUI
 		// Initialize graphics system
 		SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK);
 		SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
@@ -788,37 +777,25 @@ namespace GUI {
 		window = SDL_CreateWindow("BadNES", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
 		renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
 		SDL_RenderSetLogicalSize(renderer, WIDTH, HEIGHT);
-		gameTexture = SDL_CreateTexture (renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
+		gameTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
 		keys = SDL_GetKeyboardState(0);		
 	}
-	// Get the joypad state from SDL
-	u8 get_joypad_state(int n) {
+	u8 get_joypad_state(int n) { // Get the joypad state from SDL
 		u8 j = 0;
 		j |= keys[KEY_A] << 0; j |= keys[KEY_B] << 1; j |= keys[KEY_SELECT] << 2; j |= keys[KEY_START] << 3;
 		j |= keys[KEY_UP] << 4; j |= keys[KEY_DOWN] << 5; j |= keys[KEY_LEFT] << 6; j |= keys[KEY_RIGHT] << 7;
 		return j;
 	}
-	// Send the rendered frame to the GUI
-	void new_frame(u32* pixels) { SDL_UpdateTexture(gameTexture, NULL, pixels, WIDTH * sizeof(u32)); }
-	// Render the screen
-	void render() {
+	void new_frame(u32* pixels) { SDL_UpdateTexture(gameTexture, NULL, pixels, WIDTH * sizeof(u32)); } // Send the rendered frame to the GUI
+	void render() { // Render the screen
 		SDL_RenderClear(renderer);
 		// Draw the NES screen
 		SDL_RenderCopy(renderer, gameTexture, NULL, NULL);
 		SDL_RenderPresent(renderer);
 	}
-	// Save state
-	void save() {
-		CPU::save();
-		// save PPU
-	}
-	// Load state
-	void load() {
-		CPU::load();
-		// load PPU
-	}
-	// Run the emulator
-	void run(const char* file) {
+	void save() { CPU::save(), PPU::save(), saveGameTexture = gameTexture; } // Save state
+	void load() { CPU::load(), PPU::save(), gameTexture = saveGameTexture; } // Load state
+	void run(const char* file) { // Run the emulator
 		SDL_Event e;
 		// Framerate control
 		u32 frameStart, frameTime;
