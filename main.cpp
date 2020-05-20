@@ -10,6 +10,8 @@
 
 #include <bits/stdc++.h>
 #include <SDL2/SDL.h>
+#include "Nes_Apu.h"
+#include "Sound_Queue.h"
 #define NTH_BIT(x, n) (((x) >> (n)) & 1)
 typedef uint8_t  u8;  typedef int8_t  s8;
 typedef uint16_t u16; typedef int16_t s16;
@@ -21,6 +23,7 @@ typedef unsigned cpu_addr_t; // 16-bit memory address
 // Initial declarations
 namespace APU {
 	template <bool write> u8 access(int elapsed, u16 addr, u8 v = 0);
+	void run_frame(int elapsed), reset(), init();
 }
 namespace CPU {
 	enum IntType { NMI, RESET, IRQ, BRK }; // Interrupt type
@@ -89,8 +92,7 @@ namespace Joypad {
 namespace GUI {
 	const unsigned WIDTH  = 256, HEIGHT = 240; // Screen size
 	int query_button();
-	void init(), run(), save(), load();
-	void new_frame(u32* pixels);
+	void init(), run(), save(), load(), new_frame(u32* pixels), new_samples(const blip_sample_t* samples, size_t count);;
 	u8 get_joypad_state(int n);
 	SDL_Scancode query_key();
 }
@@ -279,9 +281,24 @@ public:
 
 // Actual code
 namespace APU {
+	Nes_Apu apu; Blip_Buffer buf;
 	const int OUT_SIZE = 4096;
-	template <bool write> u8 access(int elapsed, u16 addr, u8 v) { return v; }
+	blip_sample_t outBuf[OUT_SIZE];
+	void init() {
+		buf.sample_rate(96000); buf.clock_rate(1789773);
+		apu.output(&buf); apu.dmc_reader(CPU::dmc_read);
+	}
+	void reset() { apu.reset(); buf.clear(); }
+	template <bool write> u8 access(int elapsed, u16 addr, u8 v) {
+		if (write) apu.write_register(elapsed, addr, v);
+		else if (addr == apu.status_addr) v = apu.read_status(elapsed);
+		return v;
+	}
 	template u8 access<0>(int, u16, u8); template u8 access<1>(int, u16, u8);
+	void run_frame(int elapsed) {
+		apu.end_frame(elapsed); buf.end_frame(elapsed);
+		if (buf.samples_avail() >= OUT_SIZE) GUI::new_samples(outBuf, buf.read_samples(outBuf, OUT_SIZE));
+	}
 }
 namespace CPU {
 	u8 A, X, Y, S, ram[0x800]; u16 PC; Flags P; bool nmi, irq; // CPU state
@@ -462,6 +479,7 @@ namespace CPU {
 			else if (irq and !P[I]) INT<IRQ>();
 			exec();
 		}
+		APU::run_frame(elapsed());
 	}
 	void save() { // Save state
 		ss.A = A, ss.X = X, ss.Y = Y, ss.S = S, ss.PC = PC, ss.P = P, ss.nmi = nmi, ss.irq = irq;
@@ -741,7 +759,7 @@ namespace Cartridge {
 			case 4: mapper = new Mapper4(rom); break;
 			case 7: mapper = new Mapper7(rom); break;
 		}
-		CPU::power(), PPU::reset();
+		CPU::power(), PPU::reset(), APU::reset();
 	}
 }
 namespace Joypad {
@@ -766,6 +784,7 @@ namespace GUI {
 	SDL_Renderer *renderer;
 	SDL_Texture *gameTexture, *saveGameTexture;
 	u8 const *keys;
+	Sound_Queue* soundQueue;
 	SDL_Scancode KEY_A = SDL_SCANCODE_A, KEY_B = SDL_SCANCODE_S, KEY_SELECT = SDL_SCANCODE_SPACE, KEY_START = SDL_SCANCODE_RETURN;
 	SDL_Scancode KEY_UP = SDL_SCANCODE_UP, KEY_DOWN = SDL_SCANCODE_DOWN, KEY_LEFT = SDL_SCANCODE_LEFT, KEY_RIGHT = SDL_SCANCODE_RIGHT;
 	SDL_Scancode KEY_SAVE = SDL_SCANCODE_Q, KEY_LOAD = SDL_SCANCODE_W; // Saving and loading
@@ -773,6 +792,9 @@ namespace GUI {
 		// Initialize graphics system
 		SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK);
 		SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+		APU::init();
+		soundQueue = new Sound_Queue;
+		soundQueue->init(96000);
 		// Initialize graphics structures
 		window = SDL_CreateWindow("BadNES", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
 		renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
@@ -787,6 +809,7 @@ namespace GUI {
 		return j;
 	}
 	void new_frame(u32* pixels) { SDL_UpdateTexture(gameTexture, NULL, pixels, WIDTH * sizeof(u32)); } // Send the rendered frame to the GUI
+	void new_samples(const blip_sample_t* samples, size_t count) { soundQueue->write(samples, count); }
 	void render() { // Render the screen
 		SDL_RenderClear(renderer);
 		// Draw the NES screen
