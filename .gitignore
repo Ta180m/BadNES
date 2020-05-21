@@ -1,9 +1,6 @@
-.sconsign.dblite
-badnes
-*.o
-roms
-*.nes
-build
 LaiNES
 .vscode
-*.exe
+badnes
+badnes.exe
+roms
+*.nes
