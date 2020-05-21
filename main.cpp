@@ -10,8 +10,6 @@
 
 #include <bits/stdc++.h>
 #include <SDL2/SDL.h>
-#include "Nes_Apu.h"
-#include "Sound_Queue.h"
 #define NTH_BIT(x, n) (((x) >> (n)) & 1)
 typedef uint8_t  u8;  typedef int8_t  s8;
 typedef uint16_t u16; typedef int16_t s16;
@@ -19,6 +17,1682 @@ typedef uint32_t u32; typedef int32_t s32;
 typedef uint64_t u64; typedef int64_t s64;
 typedef long     cpu_time_t; // CPU clock cycle count
 typedef unsigned cpu_addr_t; // 16-bit memory address
+
+static const char* sdl_error(const char* str) {
+	const char* sdl_str = SDL_GetError();
+	if (sdl_str && *sdl_str) str = sdl_str;
+	return str;
+}
+
+class Sound_Queue {
+private:
+	enum { buf_size = 2048 };
+	enum { buf_count = 3 };
+	typedef short sample_t;
+	sample_t* volatile bufs;
+	SDL_sem* volatile free_sem;
+	int volatile read_buf;
+	int write_buf, write_pos;
+	bool sound_open;
+	sample_t* buf(int index) {
+		assert((unsigned)index < buf_count);
+		return bufs + (long)index * buf_size;
+	};
+	void fill_buffer(Uint8* out, int count) {
+		if (SDL_SemValue(free_sem) < buf_count - 1) {
+			memcpy(out, buf(read_buf), count);
+			read_buf = (read_buf + 1) % buf_count;
+			SDL_SemPost(free_sem);
+		}
+		else memset(out, 0, count);
+	}
+	static void fill_buffer_(void* user_data, Uint8* out, int count) { ((Sound_Queue*) user_data)->fill_buffer(out, count); }
+public:
+	Sound_Queue() {
+		bufs = NULL;
+		free_sem = NULL;
+		write_buf = 0;
+		write_pos = 0;
+		read_buf = 0;
+		sound_open = false;
+	}
+	~Sound_Queue() {
+		if (sound_open) SDL_PauseAudio(1), SDL_CloseAudio();
+		if (free_sem) SDL_DestroySemaphore(free_sem);
+		delete [] bufs;
+	}	
+	const char* init(long sample_rate, int chan_count = 1) { // Initialize with specified sample rate and channel count
+		assert(!bufs); // Can only be initialized once
+		bufs = new sample_t [(long) buf_size * buf_count];
+		if (!bufs) return "Out of memory";
+		free_sem = SDL_CreateSemaphore( buf_count - 1 );
+		if (!free_sem) return sdl_error("Couldn't create semaphore");
+		SDL_AudioSpec as;
+		as.freq = sample_rate;
+		as.format = AUDIO_S16SYS;
+		as.channels = chan_count;
+		as.silence = 0;
+		as.samples = buf_size;
+		as.size = 0;
+		as.callback = fill_buffer_;
+		as.userdata = this;
+		if (SDL_OpenAudio(&as, NULL ) < 0) return sdl_error("Couldn't open SDL audio");
+		SDL_PauseAudio(false);
+		sound_open = true;
+		return NULL;
+	}
+	int sample_count() const; // Number of samples in buffer waiting to be played
+	void write(const sample_t* in, int count) { // Write samples to buffer and block until enough space is available
+		while (count) {
+			int n = buf_size - write_pos;
+			if (n > count) n = count;
+			memcpy(buf(write_buf) + write_pos, in, n * sizeof(sample_t));
+			in += n, write_pos += n, count -= n;
+			if (write_pos >= buf_size) {
+				write_pos = 0, write_buf = (write_buf + 1) % buf_count;
+				SDL_SemWait(free_sem);
+			}
+		}
+	}
+};
+
+struct apu_snapshot_t;
+class Nonlinear_Buffer;
+
+class Nes_Apu {
+private:
+	friend class Nes_Nonlinearizer;
+	void enable_nonlinear(double volume);
+	Nes_Apu(const Nes_Apu&);
+	Nes_Apu& operator = (const Nes_Apu&);
+	Nes_Osc* oscs [osc_count];
+	Nes_Square square1, square2;
+	Nes_Noise noise;
+	Nes_Triangle triangle;
+	Nes_Dmc dmc;
+	cpu_time_t last_time, earliest_irq_, next_irq;
+	int frame_period, frame_delay, frame, osc_enables, frame_mode;
+	bool irq_flag;
+	void (*irq_notifier_)( void* user_data );
+	void* irq_data;
+	Nes_Square::Synth square_synth;	
+	void irq_changed(), state_restored();
+	friend struct Nes_Dmc;
+public:
+	Nes_Apu();
+	~Nes_Apu();
+	void output(Blip_Buffer*); // Set buffer to generate all sound into, or disable sound if NULL
+	inline void dmc_reader(int(*func)(void*, cpu_addr_t), void* user_data = NULL) { // Set memory reader callback used by DMC oscillator to fetch samples
+		dmc.rom_reader_data = user_data, dmc.rom_reader = func;
+	}
+	// Write to register (0x4000-0x4017, except 0x4014 and 0x4016)
+	enum { start_addr = 0x4000 };
+	enum { end_addr   = 0x4017 };
+	void write_register( cpu_time_t, cpu_addr_t, int data );
+	// Read from status register at 0x4015
+	enum { status_addr = 0x4015 };
+	int read_status(cpu_time_t);
+	void end_frame(cpu_time_t); // Run all oscillators up to specified time
+	void reset( bool pal_timing = false, int initial_dmc_dac = 0 ); // Reset internal frame counter, registers, and all oscillators
+	// Save/load snapshot of exact emulation state
+	void save_snapshot(apu_snapshot_t* out) const;
+	void load_snapshot(apu_snapshot_t const&);
+	void buffer_cleared(); // Reset oscillator amplitudes
+	void treble_eq(const blip_eq_t&); // Set treble equalization
+	// Set sound output of specific oscillator to buffer
+	enum { osc_count = 5 };
+	void osc_output(int index, Blip_Buffer* buffer);
+	void irq_notifier( void (*func)( void* user_data ), void* user_data ) { // Set IRQ time callback
+		irq_notifier_ = func, irq_data = user_data;
+	}
+	// Get time that APU-generated IRQ will occur
+	enum { no_irq = LONG_MAX / 2 + 1 };
+	enum { irq_waiting = 0 };
+	cpu_time_t earliest_irq() const { return earliest_irq_; }
+	inline int count_dmc_reads( cpu_time_t t, cpu_time_t* last_read = NULL ) const { return dmc.count_reads( time, last_read ); }
+	void run_until( cpu_time_t ); // Run APU until specified time
+	inline void osc_output( int osc, Blip_Buffer* buf ) {
+		assert(("Nes_Apu::osc_output(): Index out of range", 0 <= osc && osc < osc_count));
+		oscs[osc]->output = buf;
+	}
+};
+
+struct Nes_Osc
+{
+	unsigned char regs [4];
+	bool reg_written [4];
+	Blip_Buffer* output;
+	int length_counter;// length counter (0 if unused by oscillator)
+	int delay;      // delay until next (potential) transition
+	int last_amp;   // last amplitude oscillator was outputting
+	
+	void clock_length( int halt_mask );
+	int period() const {
+		return (regs [3] & 7) * 0x100 + (regs [2] & 0xff);
+	}
+	void reset() {
+		delay = 0;
+		last_amp = 0;
+	}
+	int update_amp( int amp ) {
+		int delta = amp - last_amp;
+		last_amp = amp;
+		return delta;
+	}
+};
+
+struct Nes_Envelope : Nes_Osc
+{
+	int envelope;
+	int env_delay;
+	
+	void clock_envelope();
+	int volume() const;
+	void reset() {
+		envelope = 0;
+		env_delay = 0;
+		Nes_Osc::reset();
+	}
+};
+
+// Nes_Square
+struct Nes_Square : Nes_Envelope
+{
+	enum { negate_flag = 0x08 };
+	enum { shift_mask = 0x07 };
+	enum { phase_range = 8 };
+	int phase;
+	int sweep_delay;
+	
+	typedef Blip_Synth<blip_good_quality,15> Synth;
+	const Synth* synth; // shared between squares
+	
+	void clock_sweep( int adjust );
+	void run( cpu_time_t, cpu_time_t );
+	void reset() {
+		sweep_delay = 0;
+		Nes_Envelope::reset();
+	}
+};
+
+// Nes_Triangle
+struct Nes_Triangle : Nes_Osc
+{
+	enum { phase_range = 16 };
+	int phase;
+	int linear_counter;
+	Blip_Synth<blip_good_quality,15> synth;
+	
+	int calc_amp() const;
+	void run( cpu_time_t, cpu_time_t );
+	void clock_linear_counter();
+	void reset() {
+		linear_counter = 0;
+		phase = phase_range;
+		Nes_Osc::reset();
+	}
+};
+
+// Nes_Noise
+struct Nes_Noise : Nes_Envelope
+{
+	int noise;
+	Blip_Synth<blip_med_quality,15> synth;
+	
+	void run( cpu_time_t, cpu_time_t );
+	void reset() {
+		noise = 1 << 14;
+		Nes_Envelope::reset();
+	}
+};
+
+// Nes_Dmc
+struct Nes_Dmc : Nes_Osc
+{
+	int address;    // address of next byte to read
+	int period;
+	//int length_counter; // bytes remaining to play (already defined in Nes_Osc)
+	int buf;
+	int bits_remain;
+	int bits;
+	bool buf_empty;
+	bool silence;
+	
+	enum { loop_flag = 0x40 };
+	
+	int dac;
+	
+	cpu_time_t next_irq;
+	bool irq_enabled;
+	bool irq_flag;
+	bool pal_mode;
+	bool nonlinear;
+	
+	int (*rom_reader)( void*, cpu_addr_t ); // needs to be initialized to rom read function
+	void* rom_reader_data;
+	
+	Nes_Apu* apu;
+	
+	Blip_Synth<blip_med_quality,127> synth;
+	
+	void start();
+	void write_register( int, int );
+	void run( cpu_time_t, cpu_time_t );
+	void recalc_irq();
+	void fill_buffer();
+	void reload_sample();
+	void reset();
+	int count_reads( cpu_time_t, cpu_time_t* ) const;
+};
+
+class Blip_Reader;
+
+// Source time unit.
+typedef long blip_time_t;
+
+// Type of sample produced. Signed 16-bit format.
+typedef int16_t blip_sample_t;
+
+// Make buffer as large as possible (currently about 65000 samples)
+const int blip_default_length = 0;
+
+class Blip_Buffer {
+public:
+	// Construct an empty buffer.
+	Blip_Buffer();
+	~Blip_Buffer();
+	
+	// Set output sample rate and buffer length in milliseconds (1/1000 sec),
+	// then clear buffer. If length is not specified, make as large as possible.
+	// If there is insufficient memory for the buffer, sets the buffer length
+	// to 0 and returns error string (or propagates exception if compiler supports it).
+	blargg_err_t sample_rate( long samples_per_sec, int msec_length = blip_default_length );
+	// to do: rename to set_sample_rate
+	
+	// Length of buffer, in milliseconds
+	int length() const;
+	
+	// Current output sample rate
+	long sample_rate() const;
+	
+	// Number of source time units per second
+	void clock_rate( long );
+	long clock_rate() const;
+	
+	// Set frequency at which high-pass filter attenuation passes -3dB
+	void bass_freq( int frequency );
+	
+	// Remove all available samples and clear buffer to silence. If 'entire_buffer' is
+	// false, just clear out any samples waiting rather than the entire buffer.
+	void clear( bool entire_buffer = true );
+	
+	// to do:
+	// Notify Blip_Buffer that synthesis has been performed until specified time
+	//void run_until( blip_time_t );
+	
+	// End current time frame of specified duration and make its samples available
+	// (along with any still-unread samples) for reading with read_samples(). Begin
+	// a new time frame at the end of the current frame. All transitions must have
+	// been added before 'time'.
+	void end_frame( blip_time_t time );
+	
+	// Number of samples available for reading with read_samples()
+	long samples_avail() const;
+	
+	// Read at most 'max_samples' out of buffer into 'dest', removing them from from
+	// the buffer. Return number of samples actually read and removed. If stereo is
+	// true, increment 'dest' one extra time after writing each sample, to allow
+	// easy interleving of two channels into a stereo output buffer.
+	long read_samples( blip_sample_t* dest, long max_samples, bool stereo = false );
+	
+	// Remove 'count' samples from those waiting to be read
+	void remove_samples( long count );
+	
+	// Number of samples delay from synthesis to samples read out
+	int output_latency() const;
+	
+	
+	// Experimental external buffer mixing support
+	
+	// Number of raw samples that can be mixed within frame of specified duration
+	long count_samples( blip_time_t duration ) const;
+	
+	// Mix 'count' samples from 'buf' into buffer.
+	void mix_samples( const blip_sample_t* buf, long count );
+	
+	
+	// not documented yet
+	
+	void remove_silence( long count );
+	
+	typedef unsigned long resampled_time_t;
+	
+	resampled_time_t resampled_time( blip_time_t t ) const {
+		return t * resampled_time_t (factor_) + offset_;
+	}
+	
+	resampled_time_t resampled_duration( int t ) const {
+		return t * resampled_time_t (factor_);
+	}
+	
+private:
+	// noncopyable
+	Blip_Buffer( const Blip_Buffer& );
+	Blip_Buffer& operator = ( const Blip_Buffer& );
+
+	// Don't use the following members. They are public only for technical reasons.
+	public:
+		enum { widest_impulse_ = 24 };
+		typedef BOOST::uint16_t buf_t_;
+		
+		unsigned long factor_;
+		resampled_time_t offset_;
+		buf_t_* buffer_;
+		unsigned buffer_size_;
+	private:
+		long reader_accum;
+		int bass_shift;
+		long samples_per_sec;
+		long clocks_per_sec;
+		int bass_freq_;
+		int length_;
+		
+		enum { accum_fract = 15 }; // less than 16 to give extra sample range
+		enum { sample_offset = 0x7F7F }; // repeated byte allows memset to clear buffer
+		
+		friend class Blip_Reader;
+};
+
+// Low-pass equalization parameters (see notes.txt)
+class blip_eq_t {
+public:
+	blip_eq_t( double treble = 0 );
+	blip_eq_t( double treble, long cutoff, long sample_rate );
+private:
+	double treble;
+	long cutoff;
+	long sample_rate;
+	friend class Blip_Impulse_;
+};
+
+// not documented yet (see Multi_Buffer.cpp for an example of use)
+class Blip_Reader {
+	const Blip_Buffer::buf_t_* buf;
+	long accum;
+	#ifdef __MWERKS__
+	void operator = ( struct foobar ); // helps optimizer
+	#endif
+public:
+	// avoid anything which might cause optimizer to put object in memory
+	
+	int begin( Blip_Buffer& blip_buf ) {
+		buf = blip_buf.buffer_;
+		accum = blip_buf.reader_accum;
+		return blip_buf.bass_shift;
+	}
+	
+	int read() const {
+		return accum >> Blip_Buffer::accum_fract;
+	}
+	
+	void next( int bass_shift = 9 ) {
+		accum -= accum >> bass_shift;
+		accum += ((long) *buf++ - Blip_Buffer::sample_offset) << Blip_Buffer::accum_fract;
+	}
+	
+	void end( Blip_Buffer& blip_buf ) {
+		blip_buf.reader_accum = accum;
+	}
+};
+
+
+
+// End of public interface
+	
+#ifndef BLIP_BUFFER_ACCURACY
+	#define BLIP_BUFFER_ACCURACY 16
+#endif
+
+const int blip_res_bits_ = 5;
+
+typedef uint32_t blip_pair_t_;
+
+class Blip_Impulse_ {
+	typedef uint16_t imp_t;
+	
+	blip_eq_t eq;
+	double  volume_unit_;
+	imp_t*  impulses;
+	imp_t*  impulse;
+	int     width;
+	int     fine_bits;
+	int     res;
+	bool    generate;
+	
+	void fine_volume_unit();
+	void scale_impulse( int unit, imp_t* ) const;
+public:
+	Blip_Buffer*    buf;
+	uint32_t offset;
+	
+	void init( blip_pair_t_* impulses, int width, int res, int fine_bits = 0 );
+	void volume_unit( double );
+	void treble_eq( const blip_eq_t& );
+};
+
+inline blip_eq_t::blip_eq_t( double t ) :
+		treble( t ), cutoff( 0 ), sample_rate( 44100 ) {
+}
+
+inline blip_eq_t::blip_eq_t( double t, long c, long sr ) :
+		treble( t ), cutoff( c ), sample_rate( sr ) {
+}
+
+inline int Blip_Buffer::length() const {
+	return length_;
+}
+
+inline long Blip_Buffer::samples_avail() const {
+	return long (offset_ >> BLIP_BUFFER_ACCURACY);
+}
+
+inline long Blip_Buffer::sample_rate() const {
+	return samples_per_sec;
+}
+
+inline void Blip_Buffer::end_frame( blip_time_t t ) {
+	offset_ += t * factor_;
+	assert(( "Blip_Buffer::end_frame(): Frame went past end of buffer",
+			samples_avail() <= (long) buffer_size_ ));
+}
+
+inline void Blip_Buffer::remove_silence( long count ) {
+	assert(( "Blip_Buffer::remove_silence(): Tried to remove more samples than available",
+			count <= samples_avail() ));
+	offset_ -= resampled_time_t (count) << BLIP_BUFFER_ACCURACY;
+}
+
+inline int Blip_Buffer::output_latency() const {
+	return widest_impulse_ / 2;
+}
+
+inline long Blip_Buffer::clock_rate() const {
+	return clocks_per_sec;
+}
+
+Nes_Apu::Nes_Apu()
+{
+	dmc.apu = this;
+	dmc.rom_reader = NULL;
+	square1.synth = &square_synth;
+	square2.synth = &square_synth;
+	irq_notifier_ = NULL;
+	
+	oscs [0] = &square1;
+	oscs [1] = &square2;
+	oscs [2] = &triangle;
+	oscs [3] = &noise;
+	oscs [4] = &dmc;
+	
+	output( NULL );
+	volume( 1.0 );
+	reset( false );
+}
+
+Nes_Apu::~Nes_Apu()
+{
+}
+
+void Nes_Apu::treble_eq( const blip_eq_t& eq )
+{
+	square_synth.treble_eq( eq );
+	triangle.synth.treble_eq( eq );
+	noise.synth.treble_eq( eq );
+	dmc.synth.treble_eq( eq );
+}
+
+void Nes_Apu::buffer_cleared()
+{
+	square1.last_amp = 0;
+	square2.last_amp = 0;
+	triangle.last_amp = 0;
+	noise.last_amp = 0;
+	dmc.last_amp = 0;
+}
+
+void Nes_Apu::enable_nonlinear( double v )
+{
+	dmc.nonlinear = true;
+	square_synth.volume( 1.3 * 0.25751258 / 0.742467605 * 0.25 * v );
+	
+	const double tnd = 0.75 / 202 * 0.48;
+	triangle.synth.volume_unit( 3 * tnd );
+	noise.synth.volume_unit( 2 * tnd );
+	dmc.synth.volume_unit( tnd );
+	
+	buffer_cleared();
+}
+
+void Nes_Apu::volume( double v )
+{
+	dmc.nonlinear = false;
+	square_synth.volume( 0.1128 * v );
+	triangle.synth.volume( 0.12765 * v );
+	noise.synth.volume( 0.0741 * v );
+	dmc.synth.volume( 0.42545 * v );
+}
+
+void Nes_Apu::output( Blip_Buffer* buffer )
+{
+	for ( int i = 0; i < osc_count; i++ )
+		osc_output( i, buffer );
+}
+
+void Nes_Apu::reset( bool pal_mode, int initial_dmc_dac )
+{
+	// to do: time pal frame periods exactly
+	frame_period = pal_mode ? 8314 : 7458;
+	dmc.pal_mode = pal_mode;
+	
+	square1.reset();
+	square2.reset();
+	triangle.reset();
+	noise.reset();
+	dmc.reset();
+	
+	last_time = 0;
+	osc_enables = 0;
+	irq_flag = false;
+	earliest_irq_ = no_irq;
+	frame_delay = 1;
+	write_register( 0, 0x4017, 0x00 );
+	write_register( 0, 0x4015, 0x00 );
+	
+	for ( cpu_addr_t addr = start_addr; addr <= 0x4013; addr++ )
+		write_register( 0, addr, (addr & 3) ? 0x00 : 0x10 );
+	
+	dmc.dac = initial_dmc_dac;
+	if ( !dmc.nonlinear )
+		dmc.last_amp = initial_dmc_dac; // prevent output transition
+}
+
+void Nes_Apu::irq_changed()
+{
+	cpu_time_t new_irq = dmc.next_irq;
+	if ( dmc.irq_flag | irq_flag ) {
+		new_irq = 0;
+	}
+	else if ( new_irq > next_irq ) {
+		new_irq = next_irq;
+	}
+	
+	if ( new_irq != earliest_irq_ ) {
+		earliest_irq_ = new_irq;
+		if ( irq_notifier_ )
+			irq_notifier_( irq_data );
+	}
+}
+
+// frames
+
+void Nes_Apu::run_until( cpu_time_t end_time )
+{
+	require( end_time >= last_time );
+	
+	if ( end_time == last_time )
+		return;
+	
+	while ( true )
+	{
+		// earlier of next frame time or end time
+		cpu_time_t time = last_time + frame_delay;
+		if ( time > end_time )
+			time = end_time;
+		frame_delay -= time - last_time;
+		
+		// run oscs to present
+		square1.run( last_time, time );
+		square2.run( last_time, time );
+		triangle.run( last_time, time );
+		noise.run( last_time, time );
+		dmc.run( last_time, time );
+		last_time = time;
+		
+		if ( time == end_time )
+			break; // no more frames to run
+		
+		// take frame-specific actions
+		frame_delay = frame_period;
+		switch ( frame++ )
+		{
+			case 0:
+				if ( !(frame_mode & 0xc0) ) {
+		 			next_irq = time + frame_period * 4 + 1;
+		 			irq_flag = true;
+		 		}
+		 		// fall through
+		 	case 2:
+		 		// clock length and sweep on frames 0 and 2
+				square1.clock_length( 0x20 );
+				square2.clock_length( 0x20 );
+				noise.clock_length( 0x20 );
+				triangle.clock_length( 0x80 ); // different bit for halt flag on triangle
+				
+				square1.clock_sweep( -1 );
+				square2.clock_sweep( 0 );
+		 		break;
+		 	
+			case 1:
+				// frame 1 is slightly shorter
+				frame_delay -= 2;
+				break;
+			
+		 	case 3:
+		 		frame = 0;
+		 		
+		 		// frame 3 is almost twice as long in mode 1
+		 		if ( frame_mode & 0x80 )
+					frame_delay += frame_period - 6;
+				break;
+		}
+		
+		// clock envelopes and linear counter every frame
+		triangle.clock_linear_counter();
+		square1.clock_envelope();
+		square2.clock_envelope();
+		noise.clock_envelope();
+	}
+}
+
+void Nes_Apu::end_frame( cpu_time_t end_time )
+{
+	if ( end_time > last_time )
+		run_until( end_time );
+	
+	// make times relative to new frame
+	last_time -= end_time;
+	require( last_time >= 0 );
+	
+	if ( next_irq != no_irq ) {
+		next_irq -= end_time;
+		assert( next_irq >= 0 );
+	}
+	if ( dmc.next_irq != no_irq ) {
+		dmc.next_irq -= end_time;
+		assert( dmc.next_irq >= 0 );
+	}
+	if ( earliest_irq_ != no_irq ) {
+		earliest_irq_ -= end_time;
+		if ( earliest_irq_ < 0 )
+			earliest_irq_ = 0;
+	}
+}
+
+// registers
+
+static const unsigned char length_table [0x20] = {
+	0x0A, 0xFE, 0x14, 0x02, 0x28, 0x04, 0x50, 0x06,
+	0xA0, 0x08, 0x3C, 0x0A, 0x0E, 0x0C, 0x1A, 0x0E, 
+	0x0C, 0x10, 0x18, 0x12, 0x30, 0x14, 0x60, 0x16,
+	0xC0, 0x18, 0x48, 0x1A, 0x10, 0x1C, 0x20, 0x1E
+};
+
+void Nes_Apu::write_register( cpu_time_t time, cpu_addr_t addr, int data )
+{
+	require( addr > 0x20 ); // addr must be actual address (i.e. 0x40xx)
+	require( (unsigned) data <= 0xff );
+	
+	// Ignore addresses outside range
+	if ( addr < start_addr || end_addr < addr )
+		return;
+	
+	run_until( time );
+	
+	if ( addr < 0x4014 )
+	{
+		// Write to channel
+		int osc_index = (addr - start_addr) >> 2;
+		Nes_Osc* osc = oscs [osc_index];
+		
+		int reg = addr & 3;
+		osc->regs [reg] = data;
+		osc->reg_written [reg] = true;
+		
+		if ( osc_index == 4 )
+		{
+			// handle DMC specially
+			dmc.write_register( reg, data );
+		}
+		else if ( reg == 3 )
+		{
+			// load length counter
+			if ( (osc_enables >> osc_index) & 1 )
+				osc->length_counter = length_table [(data >> 3) & 0x1f];
+			
+			// reset square phase
+			if ( osc_index < 2 )
+				((Nes_Square*) osc)->phase = Nes_Square::phase_range - 1;
+		}
+	}
+	else if ( addr == 0x4015 )
+	{
+		// Channel enables
+		for ( int i = osc_count; i--; )
+			if ( !((data >> i) & 1) )
+				oscs [i]->length_counter = 0;
+		
+		bool recalc_irq = dmc.irq_flag;
+		dmc.irq_flag = false;
+		
+		int old_enables = osc_enables;
+		osc_enables = data;
+		if ( !(data & 0x10) ) {
+			dmc.next_irq = no_irq;
+			recalc_irq = true;
+		}
+		else if ( !(old_enables & 0x10) ) {
+			dmc.start(); // dmc just enabled
+		}
+		
+		if ( recalc_irq )
+			irq_changed();
+	}
+	else if ( addr == 0x4017 )
+	{
+		// Frame mode
+		frame_mode = data;
+		
+		bool irq_enabled = !(data & 0x40);
+		irq_flag &= irq_enabled;
+		next_irq = no_irq;
+		
+		// mode 1
+		frame_delay = (frame_delay & 1);
+		frame = 0;
+		
+		if ( !(data & 0x80) )
+		{
+			// mode 0
+			frame = 1;
+			frame_delay += frame_period;
+			if ( irq_enabled )
+				next_irq = time + frame_delay + frame_period * 3;
+		}
+		
+		irq_changed();
+	}
+}
+
+int Nes_Apu::read_status( cpu_time_t time )
+{
+	run_until( time - 1 );
+	
+	int result = (dmc.irq_flag << 7) | (irq_flag << 6);
+	
+	for ( int i = 0; i < osc_count; i++ )
+		if ( oscs [i]->length_counter )
+			result |= 1 << i;
+	
+	run_until( time );
+	
+	if ( irq_flag ) {
+		irq_flag = false;
+		irq_changed();
+	}
+	
+	return result;
+}
+
+void Nes_Osc::clock_length( int halt_mask )
+{
+	if ( length_counter && !(regs [0] & halt_mask) )
+		length_counter--;
+}
+
+void Nes_Envelope::clock_envelope()
+{
+	int period = regs [0] & 15;
+	if ( reg_written [3] ) {
+		reg_written [3] = false;
+		env_delay = period;
+		envelope = 15;
+	}
+	else if ( --env_delay < 0 ) {
+		env_delay = period;
+		if ( envelope | (regs [0] & 0x20) )
+			envelope = (envelope - 1) & 15;
+	}
+}
+
+int Nes_Envelope::volume() const
+{
+	return length_counter == 0 ? 0 : (regs [0] & 0x10) ? (regs [0] & 15) : envelope;
+}
+
+// Nes_Square
+
+void Nes_Square::clock_sweep( int negative_adjust )
+{
+	int sweep = regs [1];
+	
+	if ( --sweep_delay < 0 )
+	{
+		reg_written [1] = true;
+		
+		int period = this->period();
+		int shift = sweep & shift_mask;
+		if ( shift && (sweep & 0x80) && period >= 8 )
+		{
+			int offset = period >> shift;
+			
+			if ( sweep & negate_flag )
+				offset = negative_adjust - offset;
+			
+			if ( period + offset < 0x800 )
+			{
+				period += offset;
+				// rewrite period
+				regs [2] = period & 0xff;
+				regs [3] = (regs [3] & ~7) | ((period >> 8) & 7);
+			}
+		}
+	}
+	
+	if ( reg_written [1] ) {
+		reg_written [1] = false;
+		sweep_delay = (sweep >> 4) & 7;
+	}
+}
+
+void Nes_Square::run( cpu_time_t time, cpu_time_t end_time )
+{
+	if ( !output )
+		return;
+	
+	const int volume = this->volume();
+	const int period = this->period();
+	int offset = period >> (regs [1] & shift_mask);
+	if ( regs [1] & negate_flag )
+		offset = 0;
+	
+	const int timer_period = (period + 1) * 2;
+	if ( volume == 0 || period < 8 || (period + offset) >= 0x800 )
+	{
+		if ( last_amp ) {
+			synth->offset( time, -last_amp, output );
+			last_amp = 0;
+		}
+		
+		time += delay;
+		if ( time < end_time )
+		{
+			// maintain proper phase
+			int count = (end_time - time + timer_period - 1) / timer_period;
+			phase = (phase + count) & (phase_range - 1);
+			time += (long) count * timer_period;
+		}
+	}
+	else
+	{
+		// handle duty select
+		int duty_select = (regs [0] >> 6) & 3;
+		int duty = 1 << duty_select; // 1, 2, 4, 2
+		int amp = 0;
+		if ( duty_select == 3 ) {
+			duty = 2; // negated 25%
+			amp = volume;
+		}
+		if ( phase < duty )
+			amp ^= volume;
+		
+		int delta = update_amp( amp );
+		if ( delta )
+			synth->offset( time, delta, output );
+		
+		time += delay;
+		if ( time < end_time )
+		{
+			Blip_Buffer* const output = this->output;
+			const Synth* synth = this->synth;
+			int delta = amp * 2 - volume;
+			int phase = this->phase;
+			
+			do {
+				phase = (phase + 1) & (phase_range - 1);
+				if ( phase == 0 || phase == duty ) {
+					delta = -delta;
+					synth->offset_inline( time, delta, output );
+				}
+				time += timer_period;
+			}
+			while ( time < end_time );
+			
+			last_amp = (delta + volume) >> 1;
+			this->phase = phase;
+		}
+	}
+	
+	delay = time - end_time;
+}
+
+// Nes_Triangle
+
+void Nes_Triangle::clock_linear_counter()
+{
+	if ( reg_written [3] )
+		linear_counter = regs [0] & 0x7f;
+	else if ( linear_counter )
+		linear_counter--;
+	
+	if ( !(regs [0] & 0x80) )
+		reg_written [3] = false;
+}
+
+inline int Nes_Triangle::calc_amp() const
+{
+	int amp = phase_range - phase;
+	if ( amp < 0 )
+		amp = phase - (phase_range + 1);
+	return amp;
+}
+
+void Nes_Triangle::run( cpu_time_t time, cpu_time_t end_time )
+{
+	if ( !output )
+		return;
+	
+	// to do: track phase when period < 3
+	// to do: Output 7.5 on dac when period < 2? More accurate, but results in more clicks.
+	
+	int delta = update_amp( calc_amp() );
+	if ( delta )
+		synth.offset( time, delta, output );
+	
+	time += delay;
+	const int timer_period = period() + 1;
+	if ( length_counter == 0 || linear_counter == 0 || timer_period < 3 )
+	{
+		time = end_time;
+	}
+	else if ( time < end_time )
+	{
+		Blip_Buffer* const output = this->output;
+		
+		int phase = this->phase;
+		int volume = 1;
+		if ( phase > phase_range ) {
+			phase -= phase_range;
+			volume = -volume;
+		}
+		
+		do {
+			if ( --phase == 0 ) {
+				phase = phase_range;
+				volume = -volume;
+			}
+			else {
+				synth.offset_inline( time, volume, output );
+			}
+			
+			time += timer_period;
+		}
+		while ( time < end_time );
+		
+		if ( volume < 0 )
+			phase += phase_range;
+		this->phase = phase;
+		last_amp = calc_amp();
+ 	}
+	delay = time - end_time;
+}
+
+// Nes_Dmc
+
+void Nes_Dmc::reset()
+{
+	address = 0;
+	dac = 0;
+	buf = 0;
+	bits_remain = 1;
+	bits = 0;
+	buf_empty = true;
+	silence = true;
+	next_irq = Nes_Apu::no_irq;
+	irq_flag = false;
+	irq_enabled = false;
+	
+	Nes_Osc::reset();
+	period = 0x036;
+}
+
+void Nes_Dmc::recalc_irq()
+{
+	cpu_time_t irq = Nes_Apu::no_irq;
+	if ( irq_enabled && length_counter )
+		irq = apu->last_time + delay +
+				((length_counter - 1) * 8 + bits_remain - 1) * cpu_time_t (period) + 1;
+	if ( irq != next_irq ) {
+		next_irq = irq;
+		apu->irq_changed();
+	}
+}
+
+int Nes_Dmc::count_reads( cpu_time_t time, cpu_time_t* last_read ) const
+{
+	if ( last_read )
+		*last_read = time;
+	
+	if ( length_counter == 0 )
+		return 0; // not reading
+	
+	long first_read = apu->last_time + delay + long (bits_remain - 1) * period;
+	long avail = time - first_read;
+	if ( avail <= 0 )
+		return 0;
+	
+	int count = (avail - 1) / (period * 8) + 1;
+	if ( !(regs [0] & loop_flag) && count > length_counter )
+		count = length_counter;
+	
+	if ( last_read ) {
+		*last_read = first_read + (count - 1) * (period * 8) + 1;
+		assert( *last_read <= time );
+		assert( count == count_reads( *last_read, NULL ) );
+		assert( count - 1 == count_reads( *last_read - 1, NULL ) );
+	}
+	
+	return count;
+}
+
+static const short dmc_period_table [2] [16] = {
+	0x1ac, 0x17c, 0x154, 0x140, 0x11e, 0x0fe, 0x0e2, 0x0d6, // NTSC
+	0x0be, 0x0a0, 0x08e, 0x080, 0x06a, 0x054, 0x048, 0x036,
+	
+	0x18e, 0x161, 0x13c, 0x129, 0x10a, 0x0ec, 0x0d2, 0x0c7, // PAL (totally untested)
+	0x0b1, 0x095, 0x084, 0x077, 0x062, 0x04e, 0x043, 0x032  // to do: verify PAL periods
+};
+
+inline void Nes_Dmc::reload_sample()
+{
+	address = 0x4000 + regs [2] * 0x40;
+	length_counter = regs [3] * 0x10 + 1;
+}
+
+static const unsigned char dac_table [128] = {
+	 0,  0,  1,  2,  2,  3,  3,  4,  5,  5,  6,  7,  7,  8,  8,  9,
+	10, 10, 11, 11, 12, 13, 13, 14, 14, 15, 15, 16, 17, 17, 18, 18,
+	19, 19, 20, 20, 21, 21, 22, 22, 23, 23, 24, 24, 25, 25, 26, 26,
+	27, 27, 28, 28, 29, 29, 30, 30, 31, 31, 32, 32, 32, 33, 33, 34,
+	34, 35, 35, 35, 36, 36, 37, 37, 38, 38, 38, 39, 39, 40, 40, 40,
+	41, 41, 42, 42, 42, 43, 43, 44, 44, 44, 45, 45, 45, 46, 46, 47,
+	47, 47, 48, 48, 48, 49, 49, 49, 50, 50, 50, 51, 51, 51, 52, 52,
+	52, 53, 53, 53, 54, 54, 54, 55, 55, 55, 56, 56, 56, 57, 57, 57
+};
+
+void Nes_Dmc::write_register( int addr, int data )
+{
+	if ( addr == 0 ) {
+		period = dmc_period_table [pal_mode] [data & 15];
+		irq_enabled = (data & 0xc0) == 0x80; // enabled only if loop disabled
+		irq_flag &= irq_enabled;
+		recalc_irq();
+	}
+	else if ( addr == 1 )
+	{
+		if ( !nonlinear )
+		{
+			// adjust last_amp so that "pop" amplitude will be properly non-linear
+			// with respect to change in dac
+			int old_amp = dac_table [dac];
+			dac = data & 0x7F;
+			int diff = dac_table [dac] - old_amp;
+			last_amp = dac - diff;
+		}
+		
+		dac = data & 0x7F;
+	}
+}
+
+void Nes_Dmc::start()
+{
+	reload_sample();
+	fill_buffer();
+	recalc_irq();
+}
+
+void Nes_Dmc::fill_buffer()
+{
+	if ( buf_empty && length_counter )
+	{
+		require( rom_reader ); // rom_reader must be set
+		buf = rom_reader( rom_reader_data, 0x8000u + address );
+		address = (address + 1) & 0x7FFF;
+		buf_empty = false;
+		if ( --length_counter == 0 )
+		{
+			if ( regs [0] & loop_flag ) {
+				reload_sample();
+			}
+			else {
+				apu->osc_enables &= ~0x10;
+				irq_flag = irq_enabled;
+				next_irq = Nes_Apu::no_irq;
+				apu->irq_changed();
+			}
+		}
+	}
+}
+
+void Nes_Dmc::run( cpu_time_t time, cpu_time_t end_time )
+{
+	if ( !output )
+		return;
+	
+	int delta = update_amp( dac );
+	if ( delta )
+		synth.offset( time, delta, output );
+	
+	time += delay;
+	if ( time < end_time )
+	{
+		int bits_remain = this->bits_remain;
+		if ( silence && buf_empty )
+		{
+			int count = (end_time - time + period - 1) / period;
+			bits_remain = (bits_remain - 1 + 8 - (count % 8)) % 8 + 1;
+			time += count * period;
+		}
+		else
+		{
+			Blip_Buffer* const output = this->output;
+			const int period = this->period;
+			int bits = this->bits;
+			int dac = this->dac;
+			
+			do
+			{
+				if ( !silence )
+				{
+					const int step = (bits & 1) * 4 - 2;
+					bits >>= 1;
+					if ( unsigned (dac + step) <= 0x7F ) {
+						dac += step;
+						synth.offset_inline( time, step, output );
+					}
+				}
+				
+				time += period;
+				
+				if ( --bits_remain == 0 )
+				{
+					bits_remain = 8;
+					if ( buf_empty ) {
+						silence = true;
+					}
+					else {
+						silence = false;
+						bits = buf;
+						buf_empty = true;
+						fill_buffer();
+					}
+				}
+			}
+			while ( time < end_time );
+			
+			this->dac = dac;
+			this->last_amp = dac;
+			this->bits = bits;
+		}
+		this->bits_remain = bits_remain;
+	}
+	delay = time - end_time;
+}
+
+// Nes_Noise
+
+static const short noise_period_table [16] = {
+	0x004, 0x008, 0x010, 0x020, 0x040, 0x060, 0x080, 0x0A0,
+	0x0CA, 0x0FE, 0x17C, 0x1FC, 0x2FA, 0x3F8, 0x7F2, 0xFE4
+};
+
+void Nes_Noise::run( cpu_time_t time, cpu_time_t end_time )
+{
+	if ( !output )
+		return;
+	
+	const int volume = this->volume();
+	int amp = (noise & 1) ? volume : 0;
+	int delta = update_amp( amp );
+	if ( delta )
+		synth.offset( time, delta, output );
+	
+	time += delay;
+	if ( time < end_time )
+	{
+		const int mode_flag = 0x80;
+		
+		int period = noise_period_table [regs [2] & 15];
+		if ( !volume )
+		{
+			// round to next multiple of period
+			time += (end_time - time + period - 1) / period * period;
+			
+			// approximate noise cycling while muted, by shuffling up noise register
+			// to do: precise muted noise cycling?
+			if ( !(regs [2] & mode_flag) ) {
+				int feedback = (noise << 13) ^ (noise << 14);
+				noise = (feedback & 0x4000) | (noise >> 1);
+			}
+		}
+		else
+		{
+			Blip_Buffer* const output = this->output;
+			
+			// using resampled time avoids conversion in synth.offset()
+			Blip_Buffer::resampled_time_t rperiod = output->resampled_duration( period );
+			Blip_Buffer::resampled_time_t rtime = output->resampled_time( time );
+			
+			int noise = this->noise;
+			int delta = amp * 2 - volume;
+			const int tap = (regs [2] & mode_flag ? 8 : 13);
+			
+			do {
+				int feedback = (noise << tap) ^ (noise << 14);
+				time += period;
+				
+				if ( (noise + 1) & 2 ) {
+					// bits 0 and 1 of noise differ
+					delta = -delta;
+					synth.offset_resampled( rtime, delta, output );
+				}
+				
+				rtime += rperiod;
+				noise = (feedback & 0x4000) | (noise >> 1);
+			}
+			while ( time < end_time );
+			
+			last_amp = (delta + volume) >> 1;
+			this->noise = noise;
+		}
+	}
+	
+	delay = time - end_time;
+}
+
+Blip_Buffer::Blip_Buffer()
+{
+	samples_per_sec = 44100;
+	buffer_ = NULL;
+	
+	// try to cause assertion failure if buffer is used before these are set
+	clocks_per_sec = 0;
+	factor_ = ~0ul;
+	offset_ = 0;
+	buffer_size_ = 0;
+	length_ = 0;
+	
+	bass_freq_ = 16;
+}
+
+void Blip_Buffer::clear( bool entire_buffer )
+{
+	long count = (entire_buffer ? buffer_size_ : samples_avail());
+	offset_ = 0;
+	reader_accum = 0;
+	memset( buffer_, sample_offset & 0xFF, (count + widest_impulse_) * sizeof (buf_t_) );
+}
+
+blargg_err_t Blip_Buffer::sample_rate( long new_rate, int msec )
+{
+	unsigned new_size = (UINT_MAX >> BLIP_BUFFER_ACCURACY) + 1 - widest_impulse_ - 64;
+	if ( msec != blip_default_length )
+	{
+		size_t s = (new_rate * (msec + 1) + 999) / 1000;
+		if ( s < new_size )
+			new_size = s;
+		else
+			require( false ); // requested buffer length exceeds limit
+	}
+	
+	if ( buffer_size_ != new_size )
+	{
+		delete [] buffer_;
+		buffer_ = NULL; // allow for exception in allocation below
+		buffer_size_ = 0;
+		offset_ = 0;
+		
+		buffer_ = BLARGG_NEW buf_t_ [new_size + widest_impulse_];
+		BLARGG_CHECK_ALLOC( buffer_ );
+	}
+	
+	buffer_size_ = new_size;
+	length_ = new_size * 1000 / new_rate - 1;
+	if ( msec )
+		assert( length_ == msec ); // ensure length is same as that passed in
+	
+	samples_per_sec = new_rate;
+	if ( clocks_per_sec )
+		clock_rate( clocks_per_sec ); // recalculate factor
+	
+	bass_freq( bass_freq_ ); // recalculate shift
+	
+	clear();
+	
+	return blargg_success;
+}
+
+void Blip_Buffer::clock_rate( long cps )
+{
+	clocks_per_sec = cps;
+	factor_ = (unsigned long) floor( (double) samples_per_sec / cps *
+			(1L << BLIP_BUFFER_ACCURACY) + 0.5 );
+	require( factor_ > 0 ); // clock_rate/sample_rate ratio is too large
+}
+
+Blip_Buffer::~Blip_Buffer()
+{
+	delete [] buffer_;
+}
+
+void Blip_Buffer::bass_freq( int freq )
+{
+	bass_freq_ = freq;
+	if ( freq == 0 ) {
+		bass_shift = 31; // 32 or greater invokes undefined behavior elsewhere
+		return;
+	}
+	bass_shift = 1 + (int) floor( 1.442695041 * log( 0.124 * samples_per_sec / freq ) );
+	if ( bass_shift < 0 )
+		bass_shift = 0;
+	if ( bass_shift > 24 )
+		bass_shift = 24;
+}
+
+long Blip_Buffer::count_samples( blip_time_t t ) const {
+	return (resampled_time( t ) >> BLIP_BUFFER_ACCURACY) - (offset_ >> BLIP_BUFFER_ACCURACY);
+}
+
+void Blip_Impulse_::init( blip_pair_t_* imps, int w, int r, int fb )
+{
+	fine_bits = fb;
+	width = w;
+	impulses = (imp_t*) imps;
+	generate = true;
+	volume_unit_ = -1.0;
+	res = r;
+	buf = NULL;
+	
+	impulse = &impulses [width * res * 2 * (fine_bits ? 2 : 1)];
+	offset = 0;
+}
+
+const int impulse_bits = 15;
+const long impulse_amp = 1L << impulse_bits;
+const long impulse_offset = impulse_amp / 2;
+
+void Blip_Impulse_::scale_impulse( int unit, imp_t* imp_in ) const
+{
+	long offset = ((long) unit << impulse_bits) - impulse_offset * unit +
+			(1 << (impulse_bits - 1));
+	imp_t* imp = imp_in;
+	imp_t* fimp = impulse;
+	for ( int n = res / 2 + 1; n--; )
+	{
+		int error = unit;
+		for ( int nn = width; nn--; )
+		{
+			long a = ((long) *fimp++ * unit + offset) >> impulse_bits;
+			error -= a - unit;
+			*imp++ = (imp_t) a;
+		}
+		
+		// add error to middle
+		imp [-width / 2 - 1] += (imp_t) error;
+	}
+	
+	if ( res > 2 ) {
+		// second half is mirror-image
+		const imp_t* rev = imp - width - 1;
+		for ( int nn = (res / 2 - 1) * width - 1; nn--; )
+			*imp++ = *--rev;
+		*imp++ = (imp_t) unit;
+	}
+	
+	// copy to odd offset
+	*imp++ = (imp_t) unit;
+	memcpy( imp, imp_in, (res * width - 1) * sizeof *imp );
+}
+
+const int max_res = 1 << blip_res_bits_;
+
+void Blip_Impulse_::fine_volume_unit()
+{
+	// to do: find way of merging in-place without temporary buffer
+	
+	imp_t temp [max_res * 2 * Blip_Buffer::widest_impulse_];
+	scale_impulse( (offset & 0xffff) << fine_bits, temp );
+	imp_t* imp2 = impulses + res * 2 * width;
+	scale_impulse( offset & 0xffff, imp2 );
+	
+	// merge impulses
+	imp_t* imp = impulses;
+	imp_t* src2 = temp;
+	for ( int n = res / 2 * 2 * width; n--; ) {
+		*imp++ = *imp2++;
+		*imp++ = *imp2++;
+		*imp++ = *src2++;
+		*imp++ = *src2++;
+	}
+}
+
+void Blip_Impulse_::volume_unit( double new_unit )
+{
+	if ( new_unit == volume_unit_ )
+		return;
+	
+	if ( generate )
+		treble_eq( blip_eq_t( -8.87, 8800, 44100 ) );
+	
+	volume_unit_ = new_unit;
+	
+	offset = 0x10001 * (unsigned long) floor( volume_unit_ * 0x10000 + 0.5 );
+	
+	if ( fine_bits )
+		fine_volume_unit();
+	else
+		scale_impulse( offset & 0xffff, impulses );
+}
+
+static const double pi = 3.1415926535897932384626433832795029L;
+
+void Blip_Impulse_::treble_eq( const blip_eq_t& new_eq )
+{
+	if ( !generate && new_eq.treble == eq.treble && new_eq.cutoff == eq.cutoff &&
+			new_eq.sample_rate == eq.sample_rate )
+		return; // already calculated with same parameters
+	
+	generate = false;
+	eq = new_eq;
+	
+	double treble = pow( 10.0, 1.0 / 20 * eq.treble ); // dB (-6dB = 0.50)
+	if ( treble < 0.000005 )
+		treble = 0.000005;
+	
+	const double treble_freq = 22050.0; // treble level at 22 kHz harmonic
+	const double sample_rate = eq.sample_rate;
+	const double pt = treble_freq * 2 / sample_rate;
+	double cutoff = eq.cutoff * 2 / sample_rate;
+	if ( cutoff >= pt * 0.95 || cutoff >= 0.95 ) {
+		cutoff = 0.5;
+		treble = 1.0;
+	}
+	
+	// DSF Synthesis (See T. Stilson & J. Smith (1996),
+	// Alias-free digital synthesis of classic analog waveforms)
+	
+	// reduce adjacent impulse interference by using small part of wide impulse
+	const double n_harm = 4096;
+	const double rolloff = pow( treble, 1.0 / (n_harm * pt - n_harm * cutoff) );
+	const double rescale = 1.0 / pow( rolloff, n_harm * cutoff );
+	
+	const double pow_a_n = rescale * pow( rolloff, n_harm );
+	const double pow_a_nc = rescale * pow( rolloff, n_harm * cutoff );
+	
+	double total = 0.0;
+	const double to_angle = pi / 2 / n_harm / max_res;
+	
+	float buf [max_res * (Blip_Buffer::widest_impulse_ - 2) / 2];
+	const int size = max_res * (width - 2) / 2;
+	for ( int i = size; i--; )
+	{
+		double angle = (i * 2 + 1) * to_angle;
+		
+		// equivalent
+		//double y =     dsf( angle, n_harm * cutoff, 1.0 );
+		//y -= rescale * dsf( angle, n_harm * cutoff, rolloff );
+		//y += rescale * dsf( angle, n_harm,          rolloff );
+		
+		const double cos_angle = cos( angle );
+		const double cos_nc_angle = cos( n_harm * cutoff * angle );
+		const double cos_nc1_angle = cos( (n_harm * cutoff - 1.0) * angle );
+		
+		double b = 2.0 - 2.0 * cos_angle;
+		double a = 1.0 - cos_angle - cos_nc_angle + cos_nc1_angle;
+		
+		double d = 1.0 + rolloff * (rolloff - 2.0 * cos_angle);
+		double c = pow_a_n * rolloff * cos( (n_harm - 1.0) * angle ) -
+				pow_a_n * cos( n_harm * angle ) -
+				pow_a_nc * rolloff * cos_nc1_angle +
+				pow_a_nc * cos_nc_angle;
+		
+		// optimization of a / b + c / d
+		double y = (a * d + c * b) / (b * d);
+		
+		// fixed window which affects wider impulses more
+		if ( width > 12 ) {
+			double window = cos( n_harm / 1.25 / Blip_Buffer::widest_impulse_ * angle );
+			y *= window * window;
+		}
+		
+		total += (float) y;
+		buf [i] = (float) y;
+	}
+	
+	// integrate runs of length 'max_res'
+	double factor = impulse_amp * 0.5 / total; // 0.5 accounts for other mirrored half
+	imp_t* imp = impulse;
+	const int step = max_res / res;
+	int offset = res > 1 ? max_res : max_res / 2;
+	for ( int n = res / 2 + 1; n--; offset -= step )
+	{
+		for ( int w = -width / 2; w < width / 2; w++ )
+		{
+			double sum = 0;
+			for ( int i = max_res; i--; )
+			{
+				int index = w * max_res + offset + i;
+				if ( index < 0 )
+					index = -index - 1;
+				if ( index < size )
+					sum += buf [index];
+			}
+			*imp++ = (imp_t) floor( sum * factor + (impulse_offset + 0.5) );
+		}
+	}
+	
+	// rescale
+	double unit = volume_unit_;
+	if ( unit >= 0 ) {
+		volume_unit_ = -1;
+		volume_unit( unit );
+	}
+}
+
+void Blip_Buffer::remove_samples( long count )
+{
+	require( buffer_ ); // sample rate must have been set
+	
+	if ( !count ) // optimization
+		return;
+	
+	remove_silence( count );
+	
+	// Allows synthesis slightly past time passed to end_frame(), as long as it's
+	// not more than an output sample.
+	// to do: kind of hacky, could add run_until() which keeps track of extra synthesis
+	int const copy_extra = 1;
+	
+	// copy remaining samples to beginning and clear old samples
+	long remain = samples_avail() + widest_impulse_ + copy_extra;
+	if ( count >= remain )
+		memmove( buffer_, buffer_ + count, remain * sizeof (buf_t_) );
+	else
+		memcpy(  buffer_, buffer_ + count, remain * sizeof (buf_t_) );
+	memset( buffer_ + remain, sample_offset & 0xFF, count * sizeof (buf_t_) );
+}
+
+long Blip_Buffer::read_samples( blip_sample_t* out, long max_samples, bool stereo )
+{
+	require( buffer_ ); // sample rate must have been set
+	
+	long count = samples_avail();
+	if ( count > max_samples )
+		count = max_samples;
+	
+	if ( !count )
+		return 0; // optimization
+	
+	int sample_offset = this->sample_offset;
+	int bass_shift = this->bass_shift;
+	buf_t_* buf = buffer_;
+	long accum = reader_accum;
+	
+	if ( !stereo ) {
+		for ( long n = count; n--; ) {
+			long s = accum >> accum_fract;
+			accum -= accum >> bass_shift;
+			accum += (long (*buf++) - sample_offset) << accum_fract;
+			*out++ = (blip_sample_t) s;
+			
+			// clamp sample
+			if ( (BOOST::int16_t) s != s )
+				out [-1] = blip_sample_t (0x7FFF - (s >> 24));
+		}
+	}
+	else {
+		for ( long n = count; n--; ) {
+			long s = accum >> accum_fract;
+			accum -= accum >> bass_shift;
+			accum += (long (*buf++) - sample_offset) << accum_fract;
+			*out = (blip_sample_t) s;
+			out += 2;
+			
+			// clamp sample
+			if ( (BOOST::int16_t) s != s )
+				out [-2] = blip_sample_t (0x7FFF - (s >> 24));
+		}
+	}
+	
+	reader_accum = accum;
+	
+	remove_samples( count );
+	
+	return count;
+}
+
+void Blip_Buffer::mix_samples( const blip_sample_t* in, long count )
+{
+	buf_t_* buf = &buffer_ [(offset_ >> BLIP_BUFFER_ACCURACY) + (widest_impulse_ / 2 - 1)];
+	
+	int prev = 0;
+	while ( count-- ) {
+		int s = *in++;
+		*buf += s - prev;
+		prev = s;
+		++buf;
+	}
+	*buf -= *--in;
+}
 
 // Initial declarations
 namespace APU {
