@@ -5,7 +5,7 @@
  |  _ < / _` |/ _` | . ` |  __|  \___ \ 
  | |_) | (_| | (_| | |\  | |____ ____) |
  |____/ \__,_|\__,_|_| \_|______|_____/ 
-                EMULATOR
+                                EMULATOR
 ```
 
 A nearly complete NES emulator in a single 750-line C++ source file, based on [LaiNES](https://github.com/AndreaOrru/LaiNES).
